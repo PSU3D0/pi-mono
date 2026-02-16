@@ -63,6 +63,32 @@ function getCellItalic(terminal: VirtualTerminal, row: number, col: number): num
 	return cell.isItalic();
 }
 
+describe("TUI full redraw stats", () => {
+	it("tracks full redraw reasons including forced renders", async () => {
+		const terminal = new VirtualTerminal(40, 10);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = ["Line 0", "Line 1"];
+		tui.start();
+		await terminal.flush();
+
+		tui.requestRender(true, "session_switch");
+		await terminal.flush();
+
+		terminal.resize(60, 10);
+		await terminal.flush();
+
+		const stats = tui.getFullRedrawStats();
+		assert.ok(stats.reasons["first_render"] >= 1, "should count initial full render");
+		assert.ok(stats.reasons["forced:session_switch"] >= 1, "should count forced redraw reason");
+		assert.ok(stats.reasons["width_changed"] >= 1, "should count width change redraw reason");
+
+		tui.stop();
+	});
+});
+
 describe("TUI resize handling", () => {
 	it("triggers full re-render when terminal height changes", async () => {
 		await withEnv({ TERMUX_VERSION: undefined }, async () => {

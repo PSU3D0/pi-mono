@@ -230,6 +230,9 @@ export class TUI extends Container {
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
 	private fullRedrawCount = 0;
+	private fullRedrawReasonCounts = new Map<string, number>();
+	private pendingForcedFullRenderReason: string | undefined;
+	private debugContext: Record<string, unknown> = {};
 	private stopped = false;
 
 	// Overlay stack for modal components rendered on top of base content
@@ -252,6 +255,38 @@ export class TUI extends Container {
 
 	get fullRedraws(): number {
 		return this.fullRedrawCount;
+	}
+
+	getFullRedrawStats(): { total: number; reasons: Record<string, number> } {
+		const reasons = Object.fromEntries(this.fullRedrawReasonCounts.entries());
+		return { total: this.fullRedrawCount, reasons };
+	}
+
+	setDebugContext(context: Record<string, unknown>): void {
+		this.debugContext = { ...context };
+	}
+
+	private recordFullRedraw(reason: string, clear: boolean, newLineCount: number, previousLineCount: number): void {
+		this.fullRedrawCount += 1;
+		this.fullRedrawReasonCounts.set(reason, (this.fullRedrawReasonCounts.get(reason) ?? 0) + 1);
+		if (process.env.PI_DEBUG_REDRAW !== "1") return;
+		try {
+			const logPath = path.join(os.homedir(), ".pi", "agent", "pi-debug.log");
+			fs.mkdirSync(path.dirname(logPath), { recursive: true });
+			const payload = {
+				type: "tui.full_redraw",
+				ts: Date.now(),
+				reason,
+				clear,
+				previousLineCount,
+				newLineCount,
+				terminal: { width: this.terminal.columns, height: this.terminal.rows },
+				context: this.debugContext,
+			};
+			fs.appendFileSync(logPath, `${JSON.stringify(payload)}\n`, { encoding: "utf-8" });
+		} catch {
+			// best-effort debug logging
+		}
 	}
 
 	getShowHardwareCursor(): boolean {
@@ -461,15 +496,9 @@ export class TUI extends Container {
 		this.terminal.stop();
 	}
 
-	requestRender(force = false): void {
+	requestRender(force = false, reason = "forced"): void {
 		if (force) {
-			this.previousLines = [];
-			this.previousWidth = -1; // -1 triggers widthChanged, forcing a full clear
-			this.previousHeight = -1; // -1 triggers heightChanged, forcing a full clear
-			this.cursorRow = 0;
-			this.hardwareCursorRow = 0;
-			this.maxLinesRendered = 0;
-			this.previousViewportTop = 0;
+			this.pendingForcedFullRenderReason = reason;
 		}
 		if (this.renderRequested) return;
 		this.renderRequested = true;
@@ -901,8 +930,8 @@ export class TUI extends Container {
 		const heightChanged = this.previousHeight !== 0 && this.previousHeight !== height;
 
 		// Helper to clear scrollback and viewport and render all new lines
-		const fullRender = (clear: boolean): void => {
-			this.fullRedrawCount += 1;
+		const fullRender = (clear: boolean, reason: string): void => {
+			this.recordFullRedraw(reason, clear, newLines.length, this.previousLines.length);
 			let buffer = "\x1b[?2026h"; // Begin synchronized output
 			if (clear) buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
 			for (let i = 0; i < newLines.length; i++) {
@@ -926,25 +955,22 @@ export class TUI extends Container {
 			this.previousHeight = height;
 		};
 
-		const debugRedraw = process.env.PI_DEBUG_REDRAW === "1";
-		const logRedraw = (reason: string): void => {
-			if (!debugRedraw) return;
-			const logPath = path.join(os.homedir(), ".pi", "agent", "pi-debug.log");
-			const msg = `[${new Date().toISOString()}] fullRender: ${reason} (prev=${this.previousLines.length}, new=${newLines.length}, height=${height})\n`;
-			fs.appendFileSync(logPath, msg);
-		};
+		const forcedReason = this.pendingForcedFullRenderReason;
+		if (forcedReason) {
+			this.pendingForcedFullRenderReason = undefined;
+			fullRender(true, `forced:${forcedReason}`);
+			return;
+		}
 
 		// First render - just output everything without clearing (assumes clean screen)
 		if (this.previousLines.length === 0 && !widthChanged && !heightChanged) {
-			logRedraw("first render");
-			fullRender(false);
+			fullRender(false, "first_render");
 			return;
 		}
 
 		// Width changes always need a full re-render because wrapping changes.
 		if (widthChanged) {
-			logRedraw(`terminal width changed (${this.previousWidth} -> ${width})`);
-			fullRender(true);
+			fullRender(true, "width_changed");
 			return;
 		}
 
@@ -952,8 +978,7 @@ export class TUI extends Container {
 		// but Termux changes height when the software keyboard shows or hides.
 		// In that environment, a full redraw causes the entire history to replay on every toggle.
 		if (heightChanged && !isTermuxSession()) {
-			logRedraw(`terminal height changed (${this.previousHeight} -> ${height})`);
-			fullRender(true);
+			fullRender(true, "height_changed");
 			return;
 		}
 
@@ -961,8 +986,7 @@ export class TUI extends Container {
 		// (overlays need the padding, so only do this when no overlays are active)
 		// Configurable via setClearOnShrink() or PI_CLEAR_ON_SHRINK=0 env var
 		if (this.clearOnShrink && newLines.length < this.maxLinesRendered && this.overlayStack.length === 0) {
-			logRedraw(`clearOnShrink (maxLinesRendered=${this.maxLinesRendered})`);
-			fullRender(true);
+			fullRender(true, "clear_on_shrink");
 			return;
 		}
 
@@ -1011,8 +1035,7 @@ export class TUI extends Container {
 				// Clear extra lines without scrolling
 				const extraLines = this.previousLines.length - newLines.length;
 				if (extraLines > height) {
-					logRedraw(`extraLines > height (${extraLines} > ${height})`);
-					fullRender(true);
+					fullRender(true, "extra_lines_exceeded_viewport");
 					return;
 				}
 				if (extraLines > 0) {
@@ -1043,8 +1066,7 @@ export class TUI extends Container {
 		const previousContentViewportTop = Math.max(0, this.previousLines.length - height);
 		if (firstChanged < previousContentViewportTop) {
 			// First change is above previous viewport - need full re-render
-			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${previousContentViewportTop})`);
-			fullRender(true);
+			fullRender(true, "change_above_viewport");
 			return;
 		}
 
