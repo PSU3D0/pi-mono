@@ -757,6 +757,27 @@ async function generateModels() {
 		});
 	}
 
+	// Add missing Gemini 3.1 Pro Preview (google provider, GEMINI_API_KEY based)
+	if (!allModels.some(m => m.provider === "google" && m.id === "gemini-3.1-pro-preview")) {
+		allModels.push({
+			id: "gemini-3.1-pro-preview",
+			name: "Gemini 3.1 Pro Preview",
+			api: "google-generative-ai",
+			baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+			provider: "google",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 2,
+				output: 12,
+				cacheRead: 0.2,
+				cacheWrite: 0,
+			},
+			contextWindow: 1048576,
+			maxTokens: 65536,
+		});
+	}
+
 	// Add missing Claude Sonnet 4.6
 	if (!allModels.some(m => m.provider === "anthropic" && m.id === "claude-sonnet-4-6")) {
 		allModels.push({
@@ -1308,6 +1329,30 @@ async function generateModels() {
 			cost: { input: 0.09, output: 0.36, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: 131072,
 			maxTokens: 32768,
+		},
+		{
+			id: "gemini-3.1-pro-low",
+			name: "Gemini 3.1 Pro (Antigravity, Low Thinking)",
+			api: "google-gemini-cli",
+			provider: "google-antigravity",
+			baseUrl: ANTIGRAVITY_ENDPOINT,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.375 },
+			contextWindow: 1048576,
+			maxTokens: 65535,
+		},
+		{
+			id: "gemini-3.1-pro-high",
+			name: "Gemini 3.1 Pro (Antigravity, High Thinking)",
+			api: "google-gemini-cli",
+			provider: "google-antigravity",
+			baseUrl: ANTIGRAVITY_ENDPOINT,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.375 },
+			contextWindow: 1048576,
+			maxTokens: 65535,
 		},
 	];
 	allModels.push(...antigravityModels);

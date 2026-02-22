@@ -485,7 +485,7 @@ describe("totalTokens field", () => {
 			async () => {
 				const llm = getModel("openrouter", "mistralai/mistral-small-3.2-24b-instruct");
 
-				console.log(`\nOpenRouter / ${llm.id}:`);
+				console.log(`\nOpenRouter / $llm.id:`);
 				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.OPENROUTER_API_KEY });
 
 				logUsage("First request", first);

@@ -421,6 +421,18 @@ function getGemini3ThinkingLevel(
 	model: Model<"google-generative-ai">,
 ): GoogleThinkingLevel {
 	if (isGemini3ProModel(model)) {
+		// Gemini 3.1-pro supports LOW/MEDIUM/HIGH; 3-pro only supports LOW/HIGH
+		if (model.id.includes("3.1")) {
+			switch (effort) {
+				case "minimal":
+				case "low":
+					return "LOW";
+				case "medium":
+					return "MEDIUM";
+				case "high":
+					return "HIGH";
+			}
+		}
 		switch (effort) {
 			case "minimal":
 			case "low":
