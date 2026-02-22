@@ -31,6 +31,7 @@ import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
 import { type BashResult, executeBash as executeBashCommand, executeBashWithOperations } from "./bash-executor.js";
 import {
+	type CompactionPreparation,
 	type CompactionResult,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
@@ -1618,6 +1619,26 @@ export class AgentSession {
 	// Compaction
 	// =========================================================================
 
+	private async _applyContextHandlersToCompactionPreparation(
+		preparation: CompactionPreparation,
+	): Promise<CompactionPreparation> {
+		if (!this._extensionRunner?.hasHandlers("context")) {
+			return preparation;
+		}
+
+		const messagesToSummarize = await this._extensionRunner.emitContext(preparation.messagesToSummarize);
+		const turnPrefixMessages =
+			preparation.turnPrefixMessages.length > 0
+				? await this._extensionRunner.emitContext(preparation.turnPrefixMessages)
+				: preparation.turnPrefixMessages;
+
+		return {
+			...preparation,
+			messagesToSummarize,
+			turnPrefixMessages,
+		};
+	}
+
 	/**
 	 * Manually compact the session context.
 	 * Aborts current agent operation first.
@@ -1685,9 +1706,12 @@ export class AgentSession {
 				tokensBefore = extensionCompaction.tokensBefore;
 				details = extensionCompaction.details;
 			} else {
+				// Apply context handlers (e.g. DCP) before summarization to avoid overflowing compaction requests.
+				const transformedPreparation = await this._applyContextHandlersToCompactionPreparation(preparation);
+
 				// Generate compaction result
 				const result = await compact(
-					preparation,
+					transformedPreparation,
 					this.model,
 					apiKey,
 					customInstructions,
@@ -1902,9 +1926,12 @@ export class AgentSession {
 				tokensBefore = extensionCompaction.tokensBefore;
 				details = extensionCompaction.details;
 			} else {
+				// Apply context handlers (e.g. DCP) before summarization to avoid overflowing compaction requests.
+				const transformedPreparation = await this._applyContextHandlersToCompactionPreparation(preparation);
+
 				// Generate compaction result
 				const compactResult = await compact(
-					preparation,
+					transformedPreparation,
 					this.model,
 					apiKey,
 					undefined,
