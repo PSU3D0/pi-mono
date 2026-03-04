@@ -20,6 +20,8 @@ import type {
 	ThinkingLevel,
 	ToolCall,
 } from "../types.js";
+import { AntigravityAccountPool } from "../utils/antigravity-account-pool/account-pool.js";
+import type { HeaderStyle, ModelFamily } from "../utils/antigravity-account-pool/types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import {
@@ -31,6 +33,15 @@ import {
 	retainThoughtSignature,
 } from "./google-shared.js";
 import { buildBaseOptions, clampReasoning } from "./simple-options.js";
+
+/**
+ * Strips headers that trigger project-level IAM checks which fail for
+ * OAuth-based Antigravity requests (causes 403).
+ */
+export function stripProblematicHeaders(headers: Record<string, string>): void {
+	delete headers["x-goog-user-project"];
+	delete headers["X-Goog-User-Project"];
+}
 
 /**
  * Thinking level for Gemini 3 models.
@@ -60,10 +71,11 @@ export interface GoogleGeminiCliOptions extends StreamOptions {
 const DEFAULT_ENDPOINT = "https://cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
 const ANTIGRAVITY_AUTOPUSH_ENDPOINT = "https://autopush-cloudcode-pa.sandbox.googleapis.com";
+const ANTIGRAVITY_PROD_ENDPOINT = DEFAULT_ENDPOINT;
 const ANTIGRAVITY_ENDPOINT_FALLBACKS = [
 	ANTIGRAVITY_DAILY_ENDPOINT,
 	ANTIGRAVITY_AUTOPUSH_ENDPOINT,
-	DEFAULT_ENDPOINT,
+	ANTIGRAVITY_PROD_ENDPOINT,
 ] as const;
 // Headers for Gemini CLI (prod endpoint)
 const GEMINI_CLI_HEADERS = {
@@ -220,6 +232,14 @@ function isGemini3Model(modelId: string): boolean {
 }
 
 /**
+ * Should we try the next endpoint for this HTTP status?
+ * 403/404 may succeed on a different endpoint (daily/autopush/prod).
+ */
+export function isEndpointRetryable(status: number): boolean {
+	return status === 403 || status === 404 || status >= 500;
+}
+
+/**
  * Check if an error is retryable (rate limit, server error, network error, etc.)
  */
 function isRetryableError(status: number, errorText: string): boolean {
@@ -344,7 +364,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 		};
 
 		try {
-			// apiKey is JSON-encoded: { token, projectId }
+			// apiKey is JSON-encoded: { token, projectId } or extended with account pool fields
 			const apiKeyRaw = options?.apiKey;
 			if (!apiKeyRaw) {
 				throw new Error("Google Cloud Code Assist requires OAuth authentication. Use /login to authenticate.");
@@ -352,11 +372,26 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 
 			let accessToken: string;
 			let projectId: string;
+			let poolAccountIndex: number | undefined;
+			let poolHeaders: Record<string, string> | undefined;
+			let poolHeaderStyle: string | undefined;
+			let poolPath: string | undefined;
 
 			try {
-				const parsed = JSON.parse(apiKeyRaw) as { token: string; projectId: string };
+				const parsed = JSON.parse(apiKeyRaw) as {
+					token: string;
+					projectId: string;
+					accountIndex?: number;
+					headerStyle?: string;
+					headers?: Record<string, string>;
+					poolPath?: string;
+				};
 				accessToken = parsed.token;
 				projectId = parsed.projectId;
+				poolAccountIndex = parsed.accountIndex;
+				poolHeaders = parsed.headers;
+				poolHeaderStyle = parsed.headerStyle;
+				poolPath = parsed.poolPath;
 			} catch {
 				throw new Error("Invalid Google Cloud Code Assist credentials. Use /login to re-authenticate.");
 			}
@@ -367,14 +402,16 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 
 			const isAntigravity = model.provider === "google-antigravity";
 			const baseUrl = model.baseUrl?.trim();
-			const endpoints = baseUrl ? [baseUrl] : isAntigravity ? ANTIGRAVITY_ENDPOINT_FALLBACKS : [DEFAULT_ENDPOINT];
+			const endpoints = baseUrl ? [baseUrl] : isAntigravity ? [...ANTIGRAVITY_ENDPOINT_FALLBACKS] : [DEFAULT_ENDPOINT];
 
 			let requestBody = buildRequest(model, context, projectId, options, isAntigravity);
 			const nextRequestBody = await options?.onPayload?.(requestBody, model);
 			if (nextRequestBody !== undefined) {
 				requestBody = nextRequestBody as CloudCodeAssistRequest;
 			}
-			const headers = isAntigravity ? getAntigravityHeaders() : GEMINI_CLI_HEADERS;
+
+			// Use account pool headers if available (per-account fingerprints), else provider defaults.
+			const headers = poolHeaders ?? (isAntigravity ? getAntigravityHeaders() : GEMINI_CLI_HEADERS);
 
 			const requestHeaders = {
 				Authorization: `Bearer ${accessToken}`,
@@ -384,88 +421,145 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 				...(needsClaudeThinkingBetaHeader(model) ? { "anthropic-beta": CLAUDE_THINKING_BETA_HEADER } : {}),
 				...options?.headers,
 			};
+			stripProblematicHeaders(requestHeaders);
 			const requestBodyJson = JSON.stringify(requestBody);
+
+			// Create the account pool once before retrying to avoid stale-state races.
+			let pool: AntigravityAccountPool | null = null;
+			if (poolPath) {
+				pool = new AntigravityAccountPool(poolPath);
+				pool.load();
+			}
+			const family: ModelFamily = model.id.toLowerCase().includes("claude") ? "claude" : "gemini";
 
 			// Fetch with retry logic for rate limits, transient errors, and endpoint fallbacks.
 			// On 403/404, immediately try the next endpoint (no delay).
-			// On 429/5xx, retry with backoff on the same or next endpoint.
+			// On 429/5xx, retry with backoff and optionally rotate accounts.
 			let response: Response | undefined;
 			let lastError: Error | undefined;
 			let requestUrl: string | undefined;
-			let endpointIndex = 0;
 
-			for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-				if (options?.signal?.aborted) {
-					throw new Error("Request was aborted");
+			try {
+				for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+					if (options?.signal?.aborted) {
+						throw new Error("Request was aborted");
+					}
+
+					try {
+						const endpoint = endpoints[Math.min(attempt, endpoints.length - 1)];
+						requestUrl = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
+
+						// Re-evaluate headers on retry using the existing pool instance
+						let currentHeaders = requestHeaders;
+						if (attempt > 0 && pool) {
+							const creds = await pool.getCredentials(family, model.id);
+							if (creds) {
+								poolAccountIndex = creds.accountIndex;
+								poolHeaderStyle = creds.headerStyle;
+								currentHeaders = {
+									...requestHeaders,
+									Authorization: `Bearer ${creds.token}`,
+									...creds.headers,
+								};
+								stripProblematicHeaders(currentHeaders);
+							}
+						}
+
+						response = await fetch(requestUrl, {
+							method: "POST",
+							headers: currentHeaders,
+							body: requestBodyJson,
+							signal: options?.signal,
+						});
+
+						if (response.ok) {
+							if (pool && poolAccountIndex !== undefined) {
+								pool.markSuccess(poolAccountIndex);
+							}
+							break; // Success, exit retry loop
+						}
+
+						const errorText = await response.text();
+
+						// Rate limit -> backoff and maybe rotate account
+						if (isRetryableError(response.status, errorText)) {
+							if (attempt < MAX_RETRIES) {
+								let delayMs: number;
+
+								if (pool && poolAccountIndex !== undefined && poolHeaderStyle) {
+									const serverDelay = extractRetryDelay(errorText, response);
+									const result = pool.markRateLimited(
+										poolAccountIndex,
+										family,
+										poolHeaderStyle as HeaderStyle,
+										model.id,
+										response.status,
+										errorText,
+										serverDelay,
+									);
+									// If we're rotating to another account, we don't need a huge backoff
+									// The next iteration of the loop will pull the fresh credentials
+									delayMs = pool.getAccountCount() > 1 ? BASE_DELAY_MS : result.backoffMs;
+								} else {
+									// Standard backoff
+									const serverDelay = extractRetryDelay(errorText, response);
+									delayMs = serverDelay ?? BASE_DELAY_MS * 2 ** attempt;
+								}
+
+								// Check if delay exceeds max allowed (default: 60s)
+								const maxDelayMs = options?.maxRetryDelayMs ?? 60000;
+								if (maxDelayMs > 0 && delayMs > maxDelayMs && (!pool || pool.getAccountCount() <= 1)) {
+									const delaySeconds = Math.ceil(delayMs / 1000);
+									throw new Error(
+										`Server requested ${delaySeconds}s retry delay (max: ${Math.ceil(maxDelayMs / 1000)}s). ${extractErrorMessage(errorText)}`,
+									);
+								}
+
+								await sleep(Math.min(delayMs, 5000), options?.signal); // Cap wait at 5s if we are retrying/rotating
+								continue;
+							}
+						}
+
+						// Endpoint-retryable (403, 404, 5xx) -> try next endpoint
+						if (isEndpointRetryable(response.status) && attempt < MAX_RETRIES) {
+							continue;
+						}
+
+						// Truly fatal
+						if (pool && poolAccountIndex !== undefined) {
+							pool.markFailure(poolAccountIndex);
+						}
+						throw new Error(
+							`Cloud Code Assist API error (${response.status}): ${extractErrorMessage(errorText)}`,
+						);
+					} catch (error) {
+						// Check for abort - fetch throws AbortError, our code throws "Request was aborted"
+						if (error instanceof Error) {
+							if (error.name === "AbortError" || error.message === "Request was aborted") {
+								throw new Error("Request was aborted");
+							}
+						}
+						// Extract detailed error message from fetch errors (Node includes cause)
+						lastError = error instanceof Error ? error : new Error(String(error));
+						if (lastError.message === "fetch failed" && lastError.cause instanceof Error) {
+							lastError = new Error(`Network error: ${lastError.cause.message}`);
+						}
+						// Network errors are retryable
+						if (attempt < MAX_RETRIES) {
+							if (pool && poolAccountIndex !== undefined) {
+								pool.markFailure(poolAccountIndex);
+							}
+							const delayMs = BASE_DELAY_MS * 2 ** attempt;
+							await sleep(delayMs, options?.signal);
+							continue;
+						}
+						throw lastError;
+					}
 				}
-
-				try {
-					const endpoint = endpoints[endpointIndex];
-					requestUrl = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
-					response = await fetch(requestUrl, {
-						method: "POST",
-						headers: requestHeaders,
-						body: requestBodyJson,
-						signal: options?.signal,
-					});
-
-					if (response.ok) {
-						break; // Success, exit retry loop
-					}
-
-					const errorText = await response.text();
-
-					// On 403/404, cascade to the next endpoint immediately (no delay)
-					if ((response.status === 403 || response.status === 404) && endpointIndex < endpoints.length - 1) {
-						endpointIndex++;
-						continue;
-					}
-
-					// Check if retryable (429, 5xx, network patterns)
-					if (attempt < MAX_RETRIES && isRetryableError(response.status, errorText)) {
-						// Advance endpoint if possible
-						if (endpointIndex < endpoints.length - 1) {
-							endpointIndex++;
-						}
-
-						// Use server-provided delay or exponential backoff
-						const serverDelay = extractRetryDelay(errorText, response);
-						const delayMs = serverDelay ?? BASE_DELAY_MS * 2 ** attempt;
-
-						// Check if server delay exceeds max allowed (default: 60s)
-						const maxDelayMs = options?.maxRetryDelayMs ?? 60000;
-						if (maxDelayMs > 0 && serverDelay && serverDelay > maxDelayMs) {
-							const delaySeconds = Math.ceil(serverDelay / 1000);
-							throw new Error(
-								`Server requested ${delaySeconds}s retry delay (max: ${Math.ceil(maxDelayMs / 1000)}s). ${extractErrorMessage(errorText)}`,
-							);
-						}
-
-						await sleep(delayMs, options?.signal);
-						continue;
-					}
-
-					// Not retryable or max retries exceeded
-					throw new Error(`Cloud Code Assist API error (${response.status}): ${extractErrorMessage(errorText)}`);
-				} catch (error) {
-					// Check for abort - fetch throws AbortError, our code throws "Request was aborted"
-					if (error instanceof Error) {
-						if (error.name === "AbortError" || error.message === "Request was aborted") {
-							throw new Error("Request was aborted");
-						}
-					}
-					// Extract detailed error message from fetch errors (Node includes cause)
-					lastError = error instanceof Error ? error : new Error(String(error));
-					if (lastError.message === "fetch failed" && lastError.cause instanceof Error) {
-						lastError = new Error(`Network error: ${lastError.cause.message}`);
-					}
-					// Network errors are retryable
-					if (attempt < MAX_RETRIES) {
-						const delayMs = BASE_DELAY_MS * 2 ** attempt;
-						await sleep(delayMs, options?.signal);
-						continue;
-					}
-					throw lastError;
+			} finally {
+				// Save pool state once after all retries (success or failure)
+				if (pool) {
+					pool.saveNow();
 				}
 			}
 
