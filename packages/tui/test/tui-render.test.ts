@@ -81,9 +81,9 @@ describe("TUI full redraw stats", () => {
 		await terminal.flush();
 
 		const stats = tui.getFullRedrawStats();
-		assert.ok(stats.reasons["first_render"] >= 1, "should count initial full render");
+		assert.ok(stats.reasons.first_render >= 1, "should count initial full render");
 		assert.ok(stats.reasons["forced:session_switch"] >= 1, "should count forced redraw reason");
-		assert.ok(stats.reasons["width_changed"] >= 1, "should count width change redraw reason");
+		assert.ok(stats.reasons.width_changed >= 1, "should count width change redraw reason");
 
 		tui.stop();
 	});
