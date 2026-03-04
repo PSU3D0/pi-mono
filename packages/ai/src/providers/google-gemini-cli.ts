@@ -59,7 +59,12 @@ export interface GoogleGeminiCliOptions extends StreamOptions {
 
 const DEFAULT_ENDPOINT = "https://cloudcode-pa.googleapis.com";
 const ANTIGRAVITY_DAILY_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
-const ANTIGRAVITY_ENDPOINT_FALLBACKS = [ANTIGRAVITY_DAILY_ENDPOINT, DEFAULT_ENDPOINT] as const;
+const ANTIGRAVITY_AUTOPUSH_ENDPOINT = "https://autopush-cloudcode-pa.sandbox.googleapis.com";
+const ANTIGRAVITY_ENDPOINT_FALLBACKS = [
+	ANTIGRAVITY_DAILY_ENDPOINT,
+	ANTIGRAVITY_AUTOPUSH_ENDPOINT,
+	DEFAULT_ENDPOINT,
+] as const;
 // Headers for Gemini CLI (prod endpoint)
 const GEMINI_CLI_HEADERS = {
 	"User-Agent": "google-cloud-sdk vscode_cloudshelleditor/0.1",
@@ -219,6 +224,14 @@ function isGemini3FlashModel(modelId: string): boolean {
 
 function isGemini3Model(modelId: string): boolean {
 	return isGemini3ProModel(modelId) || isGemini3FlashModel(modelId);
+}
+
+/**
+ * Should we try the next endpoint for this HTTP status?
+ * 403/404 may succeed on a different endpoint (daily/autopush/prod).
+ */
+export function isEndpointRetryable(status: number): boolean {
+	return status === 403 || status === 404 || status >= 500;
 }
 
 /**
@@ -427,6 +440,11 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 						}
 
 						await sleep(delayMs, options?.signal);
+						continue;
+					}
+
+					// Endpoint-retryable (403, 404, 5xx) → try next endpoint
+					if (isEndpointRetryable(response.status) && attempt < MAX_RETRIES) {
 						continue;
 					}
 
