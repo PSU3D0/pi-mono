@@ -76,14 +76,11 @@ const DEFAULT_ANTIGRAVITY_VERSION = "1.18.3";
 
 function getAntigravityHeaders() {
 	const version = process.env.PI_AI_ANTIGRAVITY_VERSION || DEFAULT_ANTIGRAVITY_VERSION;
+	// Only User-Agent is sent as an HTTP header for antigravity requests.
+	// The opencode reference implementation confirms AM only sends User-Agent
+	// on content requests — no X-Goog-Api-Client, no Client-Metadata header.
 	return {
 		"User-Agent": `antigravity/${version} darwin/arm64`,
-		"X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-		"Client-Metadata": JSON.stringify({
-			ideType: "IDE_UNSPECIFIED",
-			platform: "PLATFORM_UNSPECIFIED",
-			pluginType: "GEMINI",
-		}),
 	};
 }
 
