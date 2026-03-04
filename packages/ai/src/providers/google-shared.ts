@@ -157,8 +157,8 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 				} else if (block.type === "toolCall") {
 					const thoughtSignature = resolveThoughtSignature(isSameProviderAndModel, block.thoughtSignature);
 					// Gemini 3 requires thoughtSignature on all function calls when thinking mode is enabled.
-					// Use the skip_thought_signature_validator sentinel for unsigned function calls
-					// (e.g. replayed from providers without thought signatures like Claude via Antigravity).
+					// If missing (e.g. from Claude or older models), use the Cloud Code Assist sentinel
+					// value to bypass signature validation without falling back to synthetic text.
 					const isGemini3 = model.id.toLowerCase().includes("gemini-3");
 					const effectiveSignature = thoughtSignature || (isGemini3 ? SKIP_THOUGHT_SIGNATURE : undefined);
 					const part: Part = {

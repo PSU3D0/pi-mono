@@ -55,8 +55,8 @@ describe("google-shared convertMessages — Gemini 3 unsigned tool calls", () =>
 		};
 
 		const contents = convertMessages(model, context);
-
 		const modelTurn = contents.find((c) => c.role === "model");
+
 		expect(modelTurn).toBeTruthy();
 
 		// Should be a structured functionCall, NOT text fallback
