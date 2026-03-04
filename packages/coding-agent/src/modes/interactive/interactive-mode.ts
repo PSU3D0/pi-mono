@@ -70,6 +70,7 @@ import { copyToClipboard } from "../../utils/clipboard.js";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.js";
 import { parseGitUrl } from "../../utils/git.js";
 import { ensureTool } from "../../utils/tools-manager.js";
+import { type AccountAction, AccountsPanelComponent } from "./components/accounts-panel.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
@@ -2107,6 +2108,11 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/accounts") {
+				this.showAccountsPanel();
+				this.editor.setText("");
+				return;
+			}
 			if (text === "/new") {
 				this.editor.setText("");
 				await this.handleClearCommand();
@@ -3782,6 +3788,46 @@ export class InteractiveMode {
 		this.chatContainer.clear();
 		this.renderInitialMessages();
 		this.showStatus("Resumed session");
+	}
+
+	private showAccountsPanel(): void {
+		const accounts = this.session.modelRegistry.authStorage.getAntigravityAccounts();
+
+		this.showSelector((done) => {
+			const panel = new AccountsPanelComponent(
+				accounts,
+				async (action: AccountAction, accountIndex?: number) => {
+					if (action === "add") {
+						done();
+						// Trigger login flow for google-antigravity
+						await this.showLoginDialog("google-antigravity");
+						// Re-show accounts panel after login
+						setTimeout(() => this.showAccountsPanel(), 500);
+					} else if (action === "toggle" && accountIndex !== undefined) {
+						this.session.modelRegistry.authStorage.toggleAntigravityAccount(accountIndex);
+						const updated = this.session.modelRegistry.authStorage.getAntigravityAccounts();
+						panel.updateAccounts(updated);
+						this.ui.requestRender();
+					} else if (action === "remove" && accountIndex !== undefined) {
+						const acc = accounts.find((a) => a.index === accountIndex);
+						const label = acc?.email ?? `Account ${accountIndex + 1}`;
+						this.session.modelRegistry.authStorage.removeAntigravityAccount(accountIndex);
+						const updated = this.session.modelRegistry.authStorage.getAntigravityAccounts();
+						panel.updateAccounts(updated);
+						this.showStatus(`Removed ${label}`);
+						this.ui.requestRender();
+					} else if (action === "close") {
+						done();
+						this.ui.requestRender();
+					}
+				},
+				() => {
+					done();
+					this.ui.requestRender();
+				},
+			);
+			return { component: panel, focus: panel };
+		});
 	}
 
 	private async showOAuthSelector(mode: "login" | "logout"): Promise<void> {

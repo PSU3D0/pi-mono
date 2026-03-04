@@ -7,6 +7,8 @@
  */
 
 import {
+	type AccountInfo,
+	AntigravityAccountPool,
 	getEnvApiKey,
 	type OAuthCredentials,
 	type OAuthLoginCallbacks,
@@ -187,13 +189,18 @@ export class AuthStorage {
 	private fallbackResolver?: (provider: string) => string | undefined;
 	private loadError: Error | null = null;
 	private errors: Error[] = [];
+	private _accountPool: AntigravityAccountPool | null = null;
 
-	private constructor(private storage: AuthStorageBackend) {
+	private constructor(
+		private storage: AuthStorageBackend,
+		private agentDir?: string,
+	) {
 		this.reload();
 	}
 
 	static create(authPath?: string): AuthStorage {
-		return new AuthStorage(new FileAuthStorageBackend(authPath ?? join(getAgentDir(), "auth.json")));
+		const dir = authPath ? dirname(authPath) : getAgentDir();
+		return new AuthStorage(new FileAuthStorageBackend(authPath ?? join(dir, "auth.json")), dir);
 	}
 
 	static fromStorage(storage: AuthStorageBackend): AuthStorage {
@@ -204,6 +211,76 @@ export class AuthStorage {
 		const storage = new InMemoryAuthStorageBackend();
 		storage.withLock(() => ({ result: undefined, next: JSON.stringify(data, null, 2) }));
 		return AuthStorage.fromStorage(storage);
+	}
+
+	// ========================================================================
+	// ANTIGRAVITY ACCOUNT POOL
+	// ========================================================================
+
+	/**
+	 * Get the Antigravity account pool for multi-account rotation.
+	 * Lazily initialized on first access.
+	 */
+	get accountPool(): AntigravityAccountPool {
+		if (!this._accountPool) {
+			const dir = this.agentDir ?? getAgentDir();
+			const poolPath = join(dir, "antigravity-accounts.json");
+			this._accountPool = new AntigravityAccountPool(poolPath);
+			this._accountPool.load();
+
+			// If pool is empty but we have a single auth.json credential, seed it
+			if (!this._accountPool.hasAccounts()) {
+				const existing = this.data["google-antigravity"];
+				if (existing?.type === "oauth") {
+					this._accountPool.addAccount({
+						refresh: existing.refresh,
+						access: existing.access,
+						expires: existing.expires,
+						projectId: (existing as any).projectId,
+						email: (existing as any).email,
+					});
+					this._accountPool.saveNow();
+				}
+			}
+		}
+		return this._accountPool;
+	}
+
+	/**
+	 * Get Antigravity account info for display.
+	 */
+	getAntigravityAccounts(): AccountInfo[] {
+		return this.accountPool.getAccountsInfo();
+	}
+
+	/**
+	 * Add a new Antigravity account (from /login flow).
+	 */
+	addAntigravityAccount(credentials: OAuthCredentials): void {
+		this.accountPool.addAccount(credentials);
+		this.accountPool.saveNow();
+	}
+
+	/**
+	 * Remove an Antigravity account by index.
+	 */
+	removeAntigravityAccount(index: number): boolean {
+		const result = this.accountPool.removeAccount(index);
+		if (result) this.accountPool.saveNow();
+		return result;
+	}
+
+	/**
+	 * Toggle an Antigravity account enabled/disabled.
+	 */
+	toggleAntigravityAccount(index: number): boolean {
+		const accounts = this.accountPool.getAccountsInfo();
+		const account = accounts.find((a) => a.index === index);
+		if (!account) return false;
+
+		const result = this.accountPool.setEnabled(index, !account.enabled);
+		if (result) this.accountPool.saveNow();
+		return result;
 	}
 
 	/**
@@ -344,6 +421,7 @@ export class AuthStorage {
 
 	/**
 	 * Login to an OAuth provider.
+	 * For google-antigravity, also adds to the multi-account pool.
 	 */
 	async login(providerId: OAuthProviderId, callbacks: OAuthLoginCallbacks): Promise<void> {
 		const provider = getOAuthProvider(providerId);
@@ -353,6 +431,11 @@ export class AuthStorage {
 
 		const credentials = await provider.login(callbacks);
 		this.set(providerId, { type: "oauth", ...credentials });
+
+		// Also add to account pool for google-antigravity
+		if (providerId === "google-antigravity") {
+			this.addAntigravityAccount(credentials);
+		}
 	}
 
 	/**
@@ -417,9 +500,10 @@ export class AuthStorage {
 	 * Priority:
 	 * 1. Runtime override (CLI --api-key)
 	 * 2. API key from auth.json
-	 * 3. OAuth token from auth.json (auto-refreshed with locking)
-	 * 4. Environment variable
-	 * 5. Fallback resolver (models.json custom providers)
+	 * 3. Account pool (for google-antigravity with multiple accounts)
+	 * 4. OAuth token from auth.json (auto-refreshed with locking)
+	 * 5. Environment variable
+	 * 6. Fallback resolver (models.json custom providers)
 	 */
 	async getApiKey(providerId: string): Promise<string | undefined> {
 		// Runtime override takes highest priority
@@ -434,11 +518,22 @@ export class AuthStorage {
 			return resolveConfigValue(cred.key);
 		}
 
+		// For google-antigravity: use account pool if available
+		if (providerId === "google-antigravity" && this._accountPool?.hasAccounts()) {
+			return this.getAntigravityApiKeyFromPool();
+		}
+
 		if (cred?.type === "oauth") {
 			const provider = getOAuthProvider(providerId);
 			if (!provider) {
 				// Unknown OAuth provider, can't get API key
 				return undefined;
+			}
+
+			// For google-antigravity, try account pool (lazy init)
+			if (providerId === "google-antigravity") {
+				const poolKey = await this.getAntigravityApiKeyFromPool();
+				if (poolKey) return poolKey;
 			}
 
 			// Check if token needs refresh
@@ -478,6 +573,33 @@ export class AuthStorage {
 
 		// Fall back to custom resolver (e.g., models.json custom providers)
 		return this.fallbackResolver?.(providerId) ?? undefined;
+	}
+
+	/**
+	 * Get API key from the Antigravity account pool.
+	 * Determines model family from the current model context and selects best account.
+	 */
+	private async getAntigravityApiKeyFromPool(): Promise<string | undefined> {
+		try {
+			const pool = this.accountPool;
+			if (!pool.hasAccounts()) return undefined;
+
+			// Default to gemini family - claude models will be detected by the provider
+			const creds = await pool.getCredentials("gemini");
+			if (!creds) return undefined;
+
+			// Return JSON-encoded credentials (same format as single-account provider)
+			return JSON.stringify({
+				token: creds.token,
+				projectId: creds.projectId,
+				accountIndex: creds.accountIndex,
+				headerStyle: creds.headerStyle,
+				headers: creds.headers,
+				poolPath: join(this.agentDir ?? getAgentDir(), "antigravity-accounts.json"),
+			});
+		} catch {
+			return undefined;
+		}
 	}
 
 	/**
