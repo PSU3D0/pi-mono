@@ -276,7 +276,7 @@ describe("rate-limits", () => {
 		it("returns 0 when any account is available", () => {
 			const limits = [
 				{ claude: Date.now() + 60_000 },
-				{}, // Available
+				{} as RateLimitState, // Available
 			];
 			expect(getMinWaitTimeForFamily(limits, "claude")).toBe(0);
 		});
@@ -1603,7 +1603,7 @@ describe("antigravity version management", () => {
 
 	it("fetchAntigravityVersion falls back on fetch failure", async () => {
 		const originalFetch = globalThis.fetch;
-		globalThis.fetch = (async () => ({ ok: false })) as typeof fetch;
+		globalThis.fetch = (async () => ({ ok: false })) as unknown as typeof fetch;
 
 		const version = await fetchAntigravityVersion();
 		expect(version).toBe(DEFAULT_ANTIGRAVITY_VERSION);
@@ -1638,7 +1638,7 @@ describe("antigravity version management", () => {
 					},
 				],
 			}),
-		})) as typeof fetch;
+		})) as unknown as typeof fetch;
 
 		const version = await fetchAntigravityVersion();
 		expect(version).toBe("1.22.0");

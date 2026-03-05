@@ -1090,6 +1090,30 @@ async function generateModels() {
 			contextWindow: 128000,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
+		{
+			id: "gpt-5.4",
+			name: "GPT-5.4",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: CODEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+			contextWindow: CODEX_CONTEXT,
+			maxTokens: CODEX_MAX_TOKENS,
+		},
+		{
+			id: "gpt-5.4-pro",
+			name: "GPT-5.4 Pro",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: CODEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 30, output: 180, cacheRead: 3, cacheWrite: 0 },
+			contextWindow: CODEX_CONTEXT,
+			maxTokens: CODEX_MAX_TOKENS,
+		},
 	];
 	allModels.push(...codexModels);
 
