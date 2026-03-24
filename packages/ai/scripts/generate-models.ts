@@ -1064,6 +1064,23 @@ async function generateModels() {
 			input: ["text", "image"],
 			cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
 			contextWindow: CODEX_CONTEXT,
+			contextTiers: [
+				{
+					id: "standard",
+					name: "Standard",
+					contextWindow: CODEX_CONTEXT,
+					description: "Standard Codex pricing up to 272k context.",
+					default: true,
+				},
+				{
+					id: "extended",
+					name: "Extended 1M",
+					contextWindow: 1_050_000,
+					cost: { input: 5, output: 22.5, cacheRead: 0.5, cacheWrite: 0 },
+					description: "Allows up to 1M context with higher input/output pricing past the standard tier.",
+				},
+			],
+			compaction: { includeThinking: false },
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
@@ -1091,18 +1108,6 @@ async function generateModels() {
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
-			id: "gpt-5.4",
-			name: "GPT-5.4",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-			baseUrl: CODEX_BASE_URL,
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
-			contextWindow: CODEX_CONTEXT,
-			maxTokens: CODEX_MAX_TOKENS,
-		},
-		{
 			id: "gpt-5.4-pro",
 			name: "GPT-5.4 Pro",
 			api: "openai-codex-responses",
@@ -1112,6 +1117,23 @@ async function generateModels() {
 			input: ["text", "image"],
 			cost: { input: 30, output: 180, cacheRead: 3, cacheWrite: 0 },
 			contextWindow: CODEX_CONTEXT,
+			contextTiers: [
+				{
+					id: "standard",
+					name: "Standard",
+					contextWindow: CODEX_CONTEXT,
+					description: "Standard Codex pricing up to 272k context.",
+					default: true,
+				},
+				{
+					id: "extended",
+					name: "Extended 1M",
+					contextWindow: 1_050_000,
+					costMultiplier: 2,
+					description: "Allows up to 1M context. Usage and pricing double past the standard tier.",
+				},
+			],
+			compaction: { includeThinking: false },
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 	];
@@ -1327,7 +1349,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 128000,
 		},
 		{
@@ -1339,7 +1361,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 64000,
 		},
 		{
@@ -1631,6 +1653,9 @@ export const MODELS = {
 			output += `\t\t\t\tcacheWrite: ${model.cost.cacheWrite},\n`;
 			output += `\t\t\t},\n`;
 			output += `\t\t\tcontextWindow: ${model.contextWindow},\n`;
+			if (model.contextTiers && model.contextTiers.length > 0) {
+				output += `\t\t\tcontextTiers: ${JSON.stringify(model.contextTiers)},\n`;
+			}
 			output += `\t\t\tmaxTokens: ${model.maxTokens},\n`;
 			output += `\t\t} satisfies Model<"${model.api}">,\n`;
 		}

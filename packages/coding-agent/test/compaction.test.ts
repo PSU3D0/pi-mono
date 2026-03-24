@@ -12,8 +12,11 @@ import {
 	findCutPoint,
 	getLastAssistantUsage,
 	prepareCompaction,
+	prepareCompactionMessagesForSerialization,
+	serializeConversation,
 	shouldCompact,
 } from "../src/core/compaction/index.js";
+import { convertToLlm } from "../src/core/messages.js";
 import {
 	buildSessionContext,
 	type CompactionEntry,
@@ -194,9 +197,14 @@ describe("shouldCompact", () => {
 			reserveTokens: 10000,
 			keepRecentTokens: 20000,
 		};
+		const model = {
+			...getModel("anthropic", "claude-sonnet-4-5"),
+			contextWindow: 100000,
+			contextTiers: [{ id: "default", name: "Default", contextWindow: 100000, default: true }],
+		};
 
-		expect(shouldCompact(95000, 100000, settings)).toBe(true);
-		expect(shouldCompact(89000, 100000, settings)).toBe(false);
+		expect(shouldCompact(95000, model, settings, "default")).toBe(true);
+		expect(shouldCompact(89000, model, settings, "default")).toBe(false);
 	});
 
 	it("should return false when disabled", () => {
@@ -205,8 +213,77 @@ describe("shouldCompact", () => {
 			reserveTokens: 10000,
 			keepRecentTokens: 20000,
 		};
+		const model = getModel("anthropic", "claude-sonnet-4-5");
 
-		expect(shouldCompact(95000, 100000, settings)).toBe(false);
+		expect(shouldCompact(95000, model, settings, "default")).toBe(false);
+	});
+
+	it("should respect auto and max context tier policies", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			reserveTokens: 16384,
+			keepRecentTokens: 20000,
+		};
+		const model = getModel("openai-codex", "gpt-5.4");
+
+		expect(shouldCompact(300000, model, settings, "default")).toBe(true);
+		expect(shouldCompact(300000, model, settings, "auto")).toBe(false);
+		expect(shouldCompact(300000, model, settings, "max")).toBe(false);
+		expect(shouldCompact(1_040_000, model, settings, "auto")).toBe(true);
+	});
+});
+
+describe("prepareCompactionMessagesForSerialization", () => {
+	it("should omit thinking blocks for gpt-5.4 compaction summaries", () => {
+		const messages: AgentMessage[] = [
+			createUserMessage("Summarize this"),
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "private chain of thought" },
+					{ type: "text", text: "Visible answer" },
+				],
+				usage: createMockUsage(100, 50),
+				stopReason: "stop",
+				timestamp: Date.now(),
+				api: "openai-codex-responses",
+				provider: "openai-codex",
+				model: "gpt-5.4",
+			},
+		];
+
+		const model = { ...getModel("openai-codex", "gpt-5.4"), compaction: { includeThinking: false } };
+		const prepared = prepareCompactionMessagesForSerialization(messages, model);
+		const serialized = serializeConversation(convertToLlm(prepared));
+
+		expect(serialized).toContain("[Assistant]: Visible answer");
+		expect(serialized).not.toContain("[Assistant thinking]:");
+		expect((prepared[1] as AssistantMessage).content.some((block) => block.type === "thinking")).toBe(false);
+	});
+
+	it("should preserve thinking blocks for non-codex models", () => {
+		const messages: AgentMessage[] = [
+			createUserMessage("Summarize this"),
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "important rationale" },
+					{ type: "text", text: "Visible answer" },
+				],
+				usage: createMockUsage(100, 50),
+				stopReason: "stop",
+				timestamp: Date.now(),
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+			},
+		];
+
+		const prepared = prepareCompactionMessagesForSerialization(messages, getModel("anthropic", "claude-sonnet-4-5"));
+		const serialized = serializeConversation(convertToLlm(prepared));
+
+		expect(serialized).toContain("[Assistant thinking]: important rationale");
+		expect((prepared[1] as AssistantMessage).content.some((block) => block.type === "thinking")).toBe(true);
 	});
 });
 

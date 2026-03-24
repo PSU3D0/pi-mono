@@ -288,4 +288,25 @@ describe("SettingsManager", () => {
 			expect(savedSettings.theme).toBe("light");
 		});
 	});
+
+	describe("context tier policy", () => {
+		it("should default to default policy", () => {
+			const manager = SettingsManager.inMemory({});
+			expect(manager.getContextTierPolicy()).toBe("default");
+		});
+
+		it("should load and save context tier policy", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ contextTiers: { policy: "auto" } }));
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getContextTierPolicy()).toBe("auto");
+
+			manager.setContextTierPolicy("max");
+			await manager.flush();
+
+			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+			expect(savedSettings.contextTiers).toEqual({ policy: "max" });
+		});
+	});
 });

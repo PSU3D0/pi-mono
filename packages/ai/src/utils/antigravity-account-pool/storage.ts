@@ -5,21 +5,52 @@
  * with file locking to prevent race conditions between pi instances.
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+type NodeFs = typeof import("node:fs");
+type NodePath = typeof import("node:path");
+
 import type { AccountPoolStorage, StoredAccount } from "./types.js";
+
+function getNodeBuiltin<T>(specifier: string): T | null {
+	if (typeof process === "undefined" || !process.versions?.node) {
+		return null;
+	}
+
+	const builtinGetter = (process as typeof process & { getBuiltinModule?: (name: string) => unknown })
+		.getBuiltinModule;
+	if (typeof builtinGetter === "function") {
+		return (builtinGetter(specifier) as T | undefined) ?? null;
+	}
+
+	try {
+		const req = Function("return typeof require !== 'undefined' ? require : undefined")() as
+			| ((name: string) => T)
+			| undefined;
+		return req?.(specifier) ?? null;
+	} catch {
+		return null;
+	}
+}
+
+function getNodeFs(): NodeFs | null {
+	return getNodeBuiltin<NodeFs>("node:fs") ?? getNodeBuiltin<NodeFs>("fs");
+}
+
+function getNodePath(): NodePath | null {
+	return getNodeBuiltin<NodePath>("node:path") ?? getNodeBuiltin<NodePath>("path");
+}
 
 /**
  * Load account pool from disk.
  * Returns null if file doesn't exist or is invalid.
  */
 export function loadAccountPool(path: string): AccountPoolStorage | null {
-	if (!existsSync(path)) {
+	const fs = getNodeFs();
+	if (!fs || !fs.existsSync(path)) {
 		return null;
 	}
 
 	try {
-		const content = readFileSync(path, "utf-8");
+		const content = fs.readFileSync(path, "utf-8");
 		const data = JSON.parse(content) as AccountPoolStorage;
 
 		// Validate version
@@ -41,13 +72,19 @@ export function loadAccountPool(path: string): AccountPoolStorage | null {
  * Save account pool to disk with restrictive permissions.
  */
 export function saveAccountPool(path: string, storage: AccountPoolStorage): void {
-	const dir = dirname(path);
-	if (!existsSync(dir)) {
-		mkdirSync(dir, { recursive: true, mode: 0o700 });
+	const fs = getNodeFs();
+	const nodePath = getNodePath();
+	if (!fs || !nodePath) {
+		return;
 	}
 
-	writeFileSync(path, JSON.stringify(storage, null, 2), "utf-8");
-	chmodSync(path, 0o600);
+	const dir = nodePath.dirname(path);
+	if (!fs.existsSync(dir)) {
+		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	}
+
+	fs.writeFileSync(path, JSON.stringify(storage, null, 2), "utf-8");
+	fs.chmodSync(path, 0o600);
 }
 
 /**

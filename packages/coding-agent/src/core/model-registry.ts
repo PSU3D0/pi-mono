@@ -10,6 +10,7 @@ import {
 	getProviders,
 	type KnownProvider,
 	type Model,
+	normalizeModel,
 	type OAuthProviderInterface,
 	type OpenAICompletionsCompat,
 	type OpenAIResponsesCompat,
@@ -80,6 +81,27 @@ const OpenAIResponsesCompatSchema = Type.Object({
 
 const OpenAICompatSchema = Type.Union([OpenAICompletionsCompatSchema, OpenAIResponsesCompatSchema]);
 
+const ContextTierSchema = Type.Object({
+	id: Type.String({ minLength: 1 }),
+	name: Type.String({ minLength: 1 }),
+	contextWindow: Type.Number({ exclusiveMinimum: 0 }),
+	costMultiplier: Type.Optional(Type.Number({ exclusiveMinimum: 0 })),
+	cost: Type.Optional(
+		Type.Object({
+			input: Type.Optional(Type.Number({ minimum: 0 })),
+			output: Type.Optional(Type.Number({ minimum: 0 })),
+			cacheRead: Type.Optional(Type.Number({ minimum: 0 })),
+			cacheWrite: Type.Optional(Type.Number({ minimum: 0 })),
+		}),
+	),
+	description: Type.Optional(Type.String()),
+	default: Type.Optional(Type.Boolean()),
+});
+
+const ModelCompactionSettingsSchema = Type.Object({
+	includeThinking: Type.Optional(Type.Boolean()),
+});
+
 // Schema for custom model definition
 // Most fields are optional with sensible defaults for local models (Ollama, LM Studio, etc.)
 const ModelDefinitionSchema = Type.Object({
@@ -98,6 +120,8 @@ const ModelDefinitionSchema = Type.Object({
 		}),
 	),
 	contextWindow: Type.Optional(Type.Number()),
+	contextTiers: Type.Optional(Type.Array(ContextTierSchema)),
+	compaction: Type.Optional(ModelCompactionSettingsSchema),
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	compat: Type.Optional(OpenAICompatSchema),
@@ -117,6 +141,8 @@ const ModelOverrideSchema = Type.Object({
 		}),
 	),
 	contextWindow: Type.Optional(Type.Number()),
+	contextTiers: Type.Optional(Type.Array(ContextTierSchema)),
+	compaction: Type.Optional(ModelCompactionSettingsSchema),
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	compat: Type.Optional(OpenAICompatSchema),
@@ -208,6 +234,8 @@ function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<A
 	if (override.reasoning !== undefined) result.reasoning = override.reasoning;
 	if (override.input !== undefined) result.input = override.input as ("text" | "image")[];
 	if (override.contextWindow !== undefined) result.contextWindow = override.contextWindow;
+	if (override.contextTiers !== undefined) result.contextTiers = override.contextTiers;
+	if (override.compaction !== undefined) result.compaction = override.compaction;
 	if (override.maxTokens !== undefined) result.maxTokens = override.maxTokens;
 
 	// Merge cost (partial override)
@@ -229,7 +257,7 @@ function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<A
 	// Deep merge compat
 	result.compat = mergeCompat(model.compat, override.compat);
 
-	return result;
+	return normalizeModel(result);
 }
 
 /** Clear the config value command cache. Exported for testing. */
@@ -496,20 +524,24 @@ export class ModelRegistry {
 				// Provider baseUrl is required when custom models are defined.
 				// Individual models can override it with modelDef.baseUrl.
 				const defaultCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-				models.push({
-					id: modelDef.id,
-					name: modelDef.name ?? modelDef.id,
-					api: api as Api,
-					provider: providerName,
-					baseUrl: modelDef.baseUrl ?? providerConfig.baseUrl!,
-					reasoning: modelDef.reasoning ?? false,
-					input: (modelDef.input ?? ["text"]) as ("text" | "image")[],
-					cost: modelDef.cost ?? defaultCost,
-					contextWindow: modelDef.contextWindow ?? 128000,
-					maxTokens: modelDef.maxTokens ?? 16384,
-					headers,
-					compat,
-				} as Model<Api>);
+				models.push(
+					normalizeModel({
+						id: modelDef.id,
+						name: modelDef.name ?? modelDef.id,
+						api: api as Api,
+						provider: providerName,
+						baseUrl: modelDef.baseUrl ?? providerConfig.baseUrl!,
+						reasoning: modelDef.reasoning ?? false,
+						input: (modelDef.input ?? ["text"]) as ("text" | "image")[],
+						cost: modelDef.cost ?? defaultCost,
+						contextWindow: modelDef.contextWindow ?? 128000,
+						contextTiers: modelDef.contextTiers,
+						compaction: modelDef.compaction,
+						maxTokens: modelDef.maxTokens ?? 16384,
+						headers,
+						compat,
+					} as Model<Api>),
+				);
 			}
 		}
 

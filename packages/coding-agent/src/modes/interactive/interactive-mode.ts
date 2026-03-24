@@ -8,7 +8,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model, OAuthProviderId } from "@mariozechner/pi-ai";
+import {
+	type AssistantMessage,
+	getContextTierPriceIndicator,
+	type ImageContent,
+	type Message,
+	type Model,
+	type OAuthProviderId,
+} from "@mariozechner/pi-ai";
 import type {
 	AutocompleteItem,
 	EditorComponent,
@@ -2037,6 +2044,11 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/context-tier" || text.startsWith("/context-tier ")) {
+				this.handleContextTierCommand(text);
+				this.editor.setText("");
+				return;
+			}
 			if (text === "/scoped-models") {
 				this.editor.setText("");
 				await this.showModelsSelector();
@@ -3249,6 +3261,7 @@ export class InteractiveMode {
 					steeringMode: this.session.steeringMode,
 					followUpMode: this.session.followUpMode,
 					transport: this.settingsManager.getTransport(),
+					contextTierPolicy: this.settingsManager.getContextTierPolicy(),
 					thinkingLevel: this.session.thinkingLevel,
 					availableThinkingLevels: this.session.getAvailableThinkingLevels(),
 					currentTheme: this.settingsManager.getTheme() || "dark",
@@ -3295,6 +3308,11 @@ export class InteractiveMode {
 					onTransportChange: (transport) => {
 						this.settingsManager.setTransport(transport);
 						this.session.agent.setTransport(transport);
+					},
+					onContextTierPolicyChange: (policy) => {
+						this.settingsManager.setContextTierPolicy(policy);
+						this.footer.invalidate();
+						this.ui.requestRender();
 					},
 					onThinkingLevelChange: (level) => {
 						this.session.setThinkingLevel(level);
@@ -4237,9 +4255,61 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private handleContextTierCommand(text: string): void {
+		const match = text.match(/^\/context-tier(?:\s+(default|auto|max))?$/);
+		if (!match) {
+			this.showError("Usage: /context-tier [default|auto|max]");
+			return;
+		}
+
+		const nextPolicy = match[1] as "default" | "auto" | "max" | undefined;
+		if (nextPolicy) {
+			this.settingsManager.setContextTierPolicy(nextPolicy);
+			this.footer.invalidate();
+			this.showStatus(`Context tier policy: ${nextPolicy}`);
+			return;
+		}
+
+		const model = this.session.model;
+		const contextUsage = this.session.getContextUsage();
+		let info = `${theme.bold("Context Tiers")}\n\n`;
+		info += `${theme.fg("dim", "Policy:")} ${this.settingsManager.getContextTierPolicy()}\n`;
+
+		if (!model) {
+			info += `${theme.fg("dim", "Model:")} none selected\n`;
+		} else {
+			info += `${theme.fg("dim", "Model:")} ${model.provider}/${model.id}\n`;
+			for (const tier of model.contextTiers ?? []) {
+				info += `${theme.fg("dim", `- ${tier.name}:`)} ${tier.contextWindow.toLocaleString()} tokens`;
+				const pricing = getContextTierPriceIndicator(model, tier);
+				if (pricing) {
+					info += ` ${pricing}`;
+				}
+				if (tier.description) {
+					info += ` — ${tier.description}`;
+				}
+				info += "\n";
+			}
+			if (contextUsage?.activeTier) {
+				info += `\n${theme.fg("dim", "Active for next turn:")} ${contextUsage.activeTier.name} (${contextUsage.contextWindow.toLocaleString()} tokens)`;
+				const pricing = getContextTierPriceIndicator(model, contextUsage.activeTier);
+				if (pricing) {
+					info += ` ${pricing}`;
+				}
+			}
+		}
+
+		info += `\n\n${theme.fg("dim", "Set with:")} /context-tier default | /context-tier auto | /context-tier max`;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.ui.requestRender();
+	}
+
 	private handleSessionCommand(): void {
 		const stats = this.session.getSessionStats();
 		const sessionName = this.sessionManager.getSessionName();
+		const contextUsage = this.session.getContextUsage();
+		const model = this.session.model;
 
 		let info = `${theme.bold("Session Info")}\n\n`;
 		if (sessionName) {
@@ -4266,11 +4336,40 @@ export class InteractiveMode {
 
 		if (stats.cost > 0) {
 			info += `\n${theme.bold("Cost")}\n`;
-			info += `${theme.fg("dim", "Total:")} ${stats.cost.toFixed(4)}`;
+			info += `${theme.fg("dim", "Total:")} ${stats.cost.toFixed(4)}\n`;
+		}
+
+		if (model && contextUsage) {
+			info += `\n${theme.bold("Context Tiers")}\n`;
+			info += `${theme.fg("dim", "Policy:")} ${contextUsage.policy ?? "default"}\n`;
+			info += `${theme.fg("dim", "Active:")} ${contextUsage.activeTier?.name ?? "Default"} (${contextUsage.contextWindow.toLocaleString()} tokens)`;
+			if (contextUsage.activeTier) {
+				const pricing = getContextTierPriceIndicator(model, contextUsage.activeTier);
+				if (pricing) {
+					info += ` ${pricing}`;
+				}
+			}
+			info += "\n";
+			if (contextUsage.tokens !== null) {
+				info += `${theme.fg("dim", "Current usage:")} ${contextUsage.tokens.toLocaleString()} tokens (${contextUsage.percent?.toFixed(1) ?? "?"}%)\n`;
+			}
+			if ((model.contextTiers?.length ?? 0) > 1) {
+				for (const tier of model.contextTiers ?? []) {
+					info += `${theme.fg("dim", `- ${tier.name}:`)} ${tier.contextWindow.toLocaleString()} tokens`;
+					const pricing = getContextTierPriceIndicator(model, tier);
+					if (pricing) {
+						info += ` ${pricing}`;
+					}
+					if (tier.description) {
+						info += ` — ${tier.description}`;
+					}
+					info += "\n";
+				}
+			}
 		}
 
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info, 1, 0));
+		this.chatContainer.addChild(new Text(info.trimEnd(), 1, 0));
 		this.ui.requestRender();
 	}
 

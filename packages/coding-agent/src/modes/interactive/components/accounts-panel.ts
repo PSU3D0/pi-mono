@@ -8,7 +8,7 @@
  * - Options to add, enable/disable, or remove accounts
  */
 
-import type { AccountInfo } from "@mariozechner/pi-ai";
+import type { AccountInfo } from "@mariozechner/pi-ai/antigravity-account-pool";
 import { Container, getEditorKeybindings, Spacer, TruncatedText } from "@mariozechner/pi-tui";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";

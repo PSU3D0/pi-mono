@@ -571,6 +571,22 @@ interface ProviderModelConfig {
   /** Maximum context window size in tokens. */
   contextWindow: number;
 
+  /** Optional tiered context windows. If omitted, the model has a single default tier matching contextWindow. */
+  contextTiers?: Array<{
+    id: string;
+    name: string;
+    contextWindow: number;
+    costMultiplier?: number;
+    cost?: {
+      input?: number;
+      output?: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+    };
+    description?: string;
+    default?: boolean;
+  }>;
+
   /** Maximum output tokens. */
   maxTokens: number;
 

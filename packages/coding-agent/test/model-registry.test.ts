@@ -1092,4 +1092,83 @@ describe("ModelRegistry", () => {
 			});
 		});
 	});
+
+	describe("context tiers", () => {
+		test("normalizes built-in models to include a default tier", () => {
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			const model = registry.find("anthropic", "claude-sonnet-4-5");
+
+			expect(model?.contextTiers).toHaveLength(1);
+			expect(model?.contextTiers?.[0]).toMatchObject({
+				id: "default",
+				contextWindow: model?.contextWindow,
+				costMultiplier: 1,
+				default: true,
+			});
+		});
+
+		test("loads custom model context tiers from models.json", () => {
+			writeRawModelsJson({
+				"custom-provider": {
+					baseUrl: "https://example.com/v1",
+					apiKey: "TEST_KEY",
+					api: "openai-responses",
+					models: [
+						{
+							id: "tiered-model",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0 },
+							contextTiers: [
+								{ id: "standard", name: "Standard", contextWindow: 100000, default: true },
+								{
+									id: "extended",
+									name: "Extended",
+									contextWindow: 200000,
+									cost: { input: 1.5, output: 2.5 },
+								},
+							],
+							maxTokens: 16000,
+						},
+					],
+				},
+			});
+
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			const model = registry.find("custom-provider", "tiered-model");
+
+			expect(model?.contextWindow).toBe(100000);
+			expect(model?.contextTiers).toHaveLength(2);
+			expect(model?.contextTiers?.[1]).toMatchObject({
+				id: "extended",
+				contextWindow: 200000,
+				cost: { input: 1.5, output: 2.5 },
+			});
+		});
+
+		test("loads custom model compaction settings from models.json", () => {
+			writeRawModelsJson({
+				"custom-provider": {
+					baseUrl: "https://example.com/v1",
+					apiKey: "TEST_KEY",
+					api: "openai-responses",
+					models: [
+						{
+							id: "compact-model",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0 },
+							compaction: { includeThinking: false },
+							maxTokens: 16000,
+						},
+					],
+				},
+			});
+
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			const model = registry.find("custom-provider", "compact-model");
+
+			expect(model?.compaction).toEqual({ includeThinking: false });
+		});
+	});
 });

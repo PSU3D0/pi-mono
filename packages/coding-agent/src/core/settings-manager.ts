@@ -1,4 +1,4 @@
-import type { Transport } from "@mariozechner/pi-ai";
+import type { ContextTierPolicy, Transport } from "@mariozechner/pi-ai";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
@@ -39,6 +39,10 @@ export interface ThinkingBudgetsSettings {
 	high?: number;
 }
 
+export interface ContextTierSettings {
+	policy?: ContextTierPolicy; // default: "default"
+}
+
 export interface MarkdownSettings {
 	codeBlockIndent?: string; // default: "  "
 }
@@ -66,6 +70,7 @@ export interface Settings {
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	transport?: TransportSetting; // default: "sse"
+	contextTiers?: ContextTierSettings;
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
 	theme?: string;
@@ -605,6 +610,19 @@ export class SettingsManager {
 	setTransport(transport: TransportSetting): void {
 		this.globalSettings.transport = transport;
 		this.markModified("transport");
+		this.save();
+	}
+
+	getContextTierPolicy(): ContextTierPolicy {
+		return this.settings.contextTiers?.policy ?? "default";
+	}
+
+	setContextTierPolicy(policy: ContextTierPolicy): void {
+		if (!this.globalSettings.contextTiers) {
+			this.globalSettings.contextTiers = {};
+		}
+		this.globalSettings.contextTiers.policy = policy;
+		this.markModified("contextTiers", "policy");
 		this.save();
 	}
 

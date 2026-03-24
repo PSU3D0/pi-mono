@@ -20,6 +20,7 @@ Edit directly or use `/settings` for common options.
 | `defaultThinkingLevel` | string | - | `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"` |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level |
+| `contextTiers.policy` | string | `"default"` | How multi-tier context models use larger windows: `"default"`, `"auto"`, `"max"` |
 
 #### thinkingBudgets
 
@@ -30,6 +31,22 @@ Edit directly or use `/settings` for common options.
     "low": 4096,
     "medium": 10240,
     "high": 32768
+  }
+}
+```
+
+#### contextTiers
+
+`contextTiers.policy` controls how pi handles models that expose multiple context tiers with different pricing.
+
+- `default`: stay on the default tier and compact before paid upgrades
+- `auto`: use a higher tier only when the next turn needs it
+- `max`: target the highest available tier before compacting
+
+```json
+{
+  "contextTiers": {
+    "policy": "auto"
   }
 }
 ```

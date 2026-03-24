@@ -1,3 +1,4 @@
+import { getContextTierPriceIndicator } from "@mariozechner/pi-ai";
 import { type Component, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.js";
@@ -82,8 +83,17 @@ export class FooterComponent implements Component {
 		// After compaction, tokens are unknown until the next LLM response.
 		const contextUsage = this.session.getContextUsage();
 		const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
+		const contextTokensValue = contextUsage?.tokens;
+		const contextTokens =
+			contextTokensValue !== null && contextTokensValue !== undefined ? formatTokens(contextTokensValue) : "?";
 		const contextPercentValue = contextUsage?.percent ?? 0;
 		const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(1) : "?";
+		const availableTiers = contextUsage?.availableTiers ?? [];
+		const activeTier = contextUsage?.activeTier;
+		const maxAvailableTier = availableTiers.length > 0 ? availableTiers[availableTiers.length - 1] : undefined;
+		const allowedTier = contextUsage?.policy === "default" ? activeTier : (maxAvailableTier ?? activeTier);
+		const hasHigherAllowedTier =
+			activeTier !== undefined && allowedTier !== undefined && allowedTier.contextWindow > activeTier.contextWindow;
 
 		// Replace home directory with ~
 		let pwd = process.cwd();
@@ -120,11 +130,20 @@ export class FooterComponent implements Component {
 
 		// Colorize context percentage based on usage
 		let contextPercentStr: string;
-		const autoIndicator = this.autoCompactEnabled ? " (auto)" : "";
-		const contextPercentDisplay =
-			contextPercent === "?"
-				? `?/${formatTokens(contextWindow)}${autoIndicator}`
-				: `${contextPercent}%/${formatTokens(contextWindow)}${autoIndicator}`;
+		const contextWindowDisplay = hasHigherAllowedTier
+			? `${formatTokens(contextWindow)}→${formatTokens(allowedTier!.contextWindow)}`
+			: formatTokens(contextWindow);
+		const pricingTier =
+			state.model && (hasHigherAllowedTier ? allowedTier : activeTier)
+				? getContextTierPriceIndicator(state.model, (hasHigherAllowedTier ? allowedTier : activeTier)!)
+				: undefined;
+		const tierIndicator = pricingTier ? ` ${pricingTier}` : "";
+		const contextPercentSuffix = contextPercent !== "?" ? ` (${contextPercent}%)` : "";
+		const contextFlags = [contextUsage?.policy, this.autoCompactEnabled ? "compact" : undefined]
+			.filter((flag): flag is string => Boolean(flag))
+			.join(" ");
+		const contextFlagsSuffix = contextFlags ? ` ${contextFlags}` : "";
+		const contextPercentDisplay = `${contextTokens}/${contextWindowDisplay}${tierIndicator}${contextPercentSuffix}${contextFlagsSuffix}`;
 		if (contextPercentValue > 90) {
 			contextPercentStr = theme.fg("error", contextPercentDisplay);
 		} else if (contextPercentValue > 70) {

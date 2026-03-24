@@ -19,6 +19,8 @@ import type {
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
 	Context,
+	ContextTier,
+	ContextTierPolicy,
 	ImageContent,
 	Model,
 	OAuthCredentials,
@@ -248,6 +250,9 @@ export interface ContextUsage {
 	contextWindow: number;
 	/** Context usage as percentage of context window, or null if tokens is unknown. */
 	percent: number | null;
+	policy?: ContextTierPolicy;
+	activeTier?: ContextTier;
+	availableTiers?: ContextTier[];
 }
 
 export interface CompactOptions {

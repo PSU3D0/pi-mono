@@ -6,7 +6,6 @@
  * client diversity (different platforms, versions, etc.).
  */
 
-import crypto from "node:crypto";
 import type { DeviceFingerprint } from "./types.js";
 import { getAntigravityVersion } from "./version.js";
 
@@ -26,6 +25,19 @@ function randomFrom<T>(arr: readonly T[]): T {
 	return arr[Math.floor(Math.random() * arr.length)]!;
 }
 
+function getCrypto(): typeof globalThis.crypto {
+	if (globalThis.crypto) {
+		return globalThis.crypto;
+	}
+	throw new Error("Web Crypto API is not available");
+}
+
+function randomHex(bytes: number): string {
+	const data = new Uint8Array(bytes);
+	getCrypto().getRandomValues(data);
+	return Array.from(data, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
 /**
  * Generate a unique device fingerprint for an account.
  */
@@ -35,8 +47,8 @@ export function generateFingerprint(): DeviceFingerprint {
 	const version = getAntigravityVersion();
 
 	return {
-		deviceId: crypto.randomUUID(),
-		sessionToken: crypto.randomBytes(16).toString("hex"),
+		deviceId: getCrypto().randomUUID(),
+		sessionToken: randomHex(16),
 		userAgent: `antigravity/${version} ${platform}`,
 		apiClient: randomFrom(ANTIGRAVITY_API_CLIENTS),
 		clientMetadata: {

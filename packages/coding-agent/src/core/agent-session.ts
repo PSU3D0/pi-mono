@@ -24,7 +24,14 @@ import type {
 	ThinkingLevel,
 } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@mariozechner/pi-ai";
-import { isContextOverflow, modelsAreEqual, resetApiProviders, supportsXhigh } from "@mariozechner/pi-ai";
+import {
+	getContextTiers,
+	isContextOverflow,
+	modelsAreEqual,
+	resetApiProviders,
+	resolveContextTier,
+	supportsXhigh,
+} from "@mariozechner/pi-ai";
 import { getDocsPath } from "../config.js";
 import { theme } from "../modes/interactive/theme/theme.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
@@ -1790,7 +1797,14 @@ export class AgentSession {
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
 		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return;
 
-		const contextWindow = this.model?.contextWindow ?? 0;
+		const contextTierPolicy = this.settingsManager.getContextTierPolicy();
+		const overflowContextWindow = this.model
+			? resolveContextTier(
+					this.model,
+					contextTierPolicy,
+					assistantMessage.usage.input + assistantMessage.usage.cacheRead,
+				).contextWindow
+			: 0;
 
 		// Skip overflow check if the message came from a different model.
 		// This handles the case where user switched from a smaller-context model (e.g. opus)
@@ -1810,7 +1824,7 @@ export class AgentSession {
 		}
 
 		// Case 1: Overflow - LLM returned context overflow error
-		if (sameModel && isContextOverflow(assistantMessage, contextWindow)) {
+		if (sameModel && isContextOverflow(assistantMessage, overflowContextWindow)) {
 			if (this._overflowRecoveryAttempted) {
 				this._emit({
 					type: "auto_compaction_end",
@@ -1835,8 +1849,8 @@ export class AgentSession {
 		}
 
 		// Case 2: Threshold - context is getting large
-		// For error messages (no usage data), estimate from last successful response.
-		// This ensures sessions that hit persistent API errors (e.g. 529) can still compact.
+		// For error messages (no usage data), estimate from the last successful response.
+		// This ensures sessions that hit persistent API errors can still compact.
 		let contextTokens: number;
 		if (assistantMessage.stopReason === "error") {
 			const messages = this.agent.state.messages;
@@ -1857,7 +1871,7 @@ export class AgentSession {
 		} else {
 			contextTokens = calculateContextTokens(assistantMessage.usage);
 		}
-		if (shouldCompact(contextTokens, contextWindow, settings)) {
+		if (this.model && shouldCompact(contextTokens, this.model, settings, contextTierPolicy)) {
 			await this._runAutoCompaction("threshold", false);
 		}
 	}
@@ -3065,8 +3079,12 @@ export class AgentSession {
 		const model = this.model;
 		if (!model) return undefined;
 
-		const contextWindow = model.contextWindow ?? 0;
-		if (contextWindow <= 0) return undefined;
+		const settings = this.settingsManager.getCompactionSettings();
+		const policy = this.settingsManager.getContextTierPolicy();
+		const availableTiers = getContextTiers(model);
+		const emptyTier = resolveContextTier(model, policy, settings.reserveTokens);
+		const emptyContextWindow = emptyTier.contextWindow;
+		if (emptyContextWindow <= 0) return undefined;
 
 		// After compaction, the last assistant usage reflects pre-compaction context size.
 		// We can only trust usage from an assistant that responded after the latest compaction.
@@ -3093,17 +3111,29 @@ export class AgentSession {
 			}
 
 			if (!hasPostCompactionUsage) {
-				return { tokens: null, contextWindow, percent: null };
+				return {
+					tokens: null,
+					contextWindow: emptyContextWindow,
+					percent: null,
+					policy,
+					activeTier: emptyTier,
+					availableTiers,
+				};
 			}
 		}
 
 		const estimate = estimateContextTokens(this.messages);
+		const activeTier = resolveContextTier(model, policy, estimate.tokens + settings.reserveTokens);
+		const contextWindow = activeTier.contextWindow;
 		const percent = (estimate.tokens / contextWindow) * 100;
 
 		return {
 			tokens: estimate.tokens,
 			contextWindow,
 			percent,
+			policy,
+			activeTier,
+			availableTiers,
 		};
 	}
 

@@ -3393,7 +3393,7 @@ export const MODELS = {
 				cacheRead: 0.5,
 				cacheWrite: 6.25,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 128000,
 		} satisfies Model<"google-gemini-cli">,
 		"claude-sonnet-4-5": {
@@ -3444,7 +3444,7 @@ export const MODELS = {
 				cacheRead: 0.3,
 				cacheWrite: 3.75,
 			},
-			contextWindow: 200000,
+			contextWindow: 1000000,
 			maxTokens: 64000,
 		} satisfies Model<"google-gemini-cli">,
 		"gemini-3-flash": {
@@ -5795,6 +5795,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 272000,
+			contextTiers: [{"id":"standard","name":"Standard","contextWindow":272000,"description":"Standard Codex pricing up to 272k context.","default":true},{"id":"extended","name":"Extended 1M","contextWindow":1050000,"cost":{"input":5,"output":22.5,"cacheRead":0.5,"cacheWrite":0},"description":"Allows up to 1M context with higher input/output pricing past the standard tier."}],
 			maxTokens: 128000,
 		} satisfies Model<"openai-codex-responses">,
 		"gpt-5.4-pro": {
@@ -5812,6 +5813,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 272000,
+			contextTiers: [{"id":"standard","name":"Standard","contextWindow":272000,"description":"Standard Codex pricing up to 272k context.","default":true},{"id":"extended","name":"Extended 1M","contextWindow":1050000,"costMultiplier":2,"description":"Allows up to 1M context. Usage and pricing double past the standard tier."}],
 			maxTokens: 128000,
 		} satisfies Model<"openai-codex-responses">,
 	},

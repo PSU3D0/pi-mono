@@ -43,6 +43,26 @@ export type KnownProvider =
 export type Provider = KnownProvider | string;
 
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ContextTierPolicy = "default" | "auto" | "max";
+
+export interface ModelCost {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+}
+
+export interface ContextTier {
+	id: string;
+	name: string;
+	contextWindow: number;
+	/** Optional uniform multiplier applied to the model's base pricing. */
+	costMultiplier?: number;
+	/** Optional per-dimension cost overrides for this tier. */
+	cost?: Partial<ModelCost>;
+	description?: string;
+	default?: boolean;
+}
 
 /** Token budgets for each thinking level (token-based providers only) */
 export interface ThinkingBudgets {
@@ -286,6 +306,11 @@ export interface OpenAIResponsesCompat {
 	// Reserved for future use
 }
 
+export interface ModelCompactionSettings {
+	/** Whether compaction summarization should include assistant thinking blocks. Default: true. */
+	includeThinking?: boolean;
+}
+
 /**
  * OpenRouter provider routing preferences.
  * Controls which upstream providers OpenRouter routes requests to.
@@ -319,13 +344,12 @@ export interface Model<TApi extends Api> {
 	baseUrl: string;
 	reasoning: boolean;
 	input: ("text" | "image")[];
-	cost: {
-		input: number; // $/million tokens
-		output: number; // $/million tokens
-		cacheRead: number; // $/million tokens
-		cacheWrite: number; // $/million tokens
-	};
+	cost: ModelCost; // $/million tokens
 	contextWindow: number;
+	/** Optional tiered context windows. When omitted, callers should treat the model as having a single default tier matching contextWindow. */
+	contextTiers?: ContextTier[];
+	/** Optional compaction behavior overrides for this model. */
+	compaction?: ModelCompactionSettings;
 	maxTokens: number;
 	headers?: Record<string, string>;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */

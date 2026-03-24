@@ -6,8 +6,8 @@
  */
 
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, Model, Usage } from "@mariozechner/pi-ai";
-import { completeSimple } from "@mariozechner/pi-ai";
+import type { AssistantMessage, ContextTierPolicy, Model, Usage } from "@mariozechner/pi-ai";
+import { completeSimple, resolveContextTier } from "@mariozechner/pi-ai";
 import {
 	convertToLlm,
 	createBranchSummaryMessage,
@@ -207,11 +207,18 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 }
 
 /**
- * Check if compaction should trigger based on context usage.
+ * Check if compaction should trigger based on context usage and the current context tier policy.
  */
-export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
+export function shouldCompact(
+	contextTokens: number,
+	model: Model<any>,
+	settings: CompactionSettings,
+	contextTierPolicy: ContextTierPolicy,
+): boolean {
 	if (!settings.enabled) return false;
-	return contextTokens > contextWindow - settings.reserveTokens;
+	const requiredTokens = contextTokens + settings.reserveTokens;
+	const activeTier = resolveContextTier(model, contextTierPolicy, requiredTokens);
+	return requiredTokens > activeTier.contextWindow;
 }
 
 // ============================================================================
@@ -516,6 +523,22 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
+function shouldIncludeThinkingInCompaction(model: Model<any>): boolean {
+	return model.compaction?.includeThinking ?? true;
+}
+
+export function prepareCompactionMessagesForSerialization(messages: AgentMessage[], model: Model<any>): AgentMessage[] {
+	if (shouldIncludeThinkingInCompaction(model)) return messages;
+
+	return messages.map((message) => {
+		if (message.role !== "assistant") return message;
+		return {
+			...message,
+			content: message.content.filter((block) => block.type !== "thinking"),
+		} as AssistantMessage;
+	});
+}
+
 /**
  * Generate a summary of the conversation using the LLM.
  * If previousSummary is provided, uses the update prompt to merge.
@@ -539,7 +562,8 @@ export async function generateSummary(
 
 	// Serialize conversation to text so model doesn't try to continue it
 	// Convert to LLM messages first (handles custom types like bashExecution, custom, etc.)
-	const llmMessages = convertToLlm(currentMessages);
+	const messagesForSerialization = prepareCompactionMessagesForSerialization(currentMessages, model);
+	const llmMessages = convertToLlm(messagesForSerialization);
 	const conversationText = serializeConversation(llmMessages);
 
 	// Build the prompt with conversation wrapped in tags
@@ -788,7 +812,8 @@ async function generateTurnPrefixSummary(
 	signal?: AbortSignal,
 ): Promise<string> {
 	const maxTokens = Math.floor(0.5 * reserveTokens); // Smaller budget for turn prefix
-	const llmMessages = convertToLlm(messages);
+	const messagesForSerialization = prepareCompactionMessagesForSerialization(messages, model);
+	const llmMessages = convertToLlm(messagesForSerialization);
 	const conversationText = serializeConversation(llmMessages);
 	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
 	const summarizationMessages = [

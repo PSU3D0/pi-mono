@@ -37,6 +37,15 @@ import { transformMessages } from "./transform-messages.js";
 // Utilities
 // =============================================================================
 
+type ResponseOutputMessageWithPhase = ResponseOutputMessage & {
+	phase?: TextSignatureV1["phase"];
+};
+
+function getResponseOutputMessagePhase(message: ResponseOutputMessage): TextSignatureV1["phase"] | undefined {
+	const phase = (message as { phase?: unknown }).phase;
+	return phase === "commentary" || phase === "final_answer" ? phase : undefined;
+}
+
 function encodeTextSignatureV1(id: string, phase?: TextSignatureV1["phase"]): string {
 	const payload: TextSignatureV1 = { v: 1, id };
 	if (phase) payload.phase = phase;
@@ -189,7 +198,7 @@ export function convertResponsesMessages<TApi extends Api>(
 						status: "completed",
 						id: msgId,
 						phase: parsedSignature?.phase,
-					} satisfies ResponseOutputMessage);
+					} as ResponseOutputMessageWithPhase);
 				} else if (block.type === "toolCall") {
 					const toolCall = block as ToolCall;
 					const [callId, itemIdRaw] = toolCall.id.split("|");
@@ -426,7 +435,7 @@ export async function processResponsesStream<TApi extends Api>(
 				currentBlock = null;
 			} else if (item.type === "message" && currentBlock?.type === "text") {
 				currentBlock.text = item.content.map((c) => (c.type === "output_text" ? c.text : c.refusal)).join("");
-				currentBlock.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
+				currentBlock.textSignature = encodeTextSignatureV1(item.id, getResponseOutputMessagePhase(item));
 				stream.push({
 					type: "text_end",
 					contentIndex: blockIndex(),

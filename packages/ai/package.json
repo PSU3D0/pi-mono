@@ -50,6 +50,10 @@
 			"types": "./dist/oauth.d.ts",
 			"import": "./dist/oauth.js"
 		},
+		"./antigravity-account-pool": {
+			"types": "./dist/antigravity-account-pool.d.ts",
+			"import": "./dist/antigravity-account-pool.js"
+		},
 		"./bedrock-provider": {
 			"types": "./dist/bedrock-provider.d.ts",
 			"import": "./dist/bedrock-provider.js"

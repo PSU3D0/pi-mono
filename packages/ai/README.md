@@ -731,6 +731,20 @@ const response = await stream(ollamaModel, context, {
 });
 ```
 
+Models may optionally define `contextTiers` when a provider exposes multiple context windows with different pricing. If omitted, the library treats the model as having a single default tier matching `contextWindow`.
+
+```typescript
+contextTiers: [
+  { id: 'standard', name: 'Standard', contextWindow: 272000, default: true },
+  {
+    id: 'extended',
+    name: 'Extended 1M',
+    contextWindow: 1050000,
+    cost: { input: 5, output: 22.5, cacheRead: 0.5, cacheWrite: 0 }
+  }
+]
+```
+
 Some OpenAI-compatible servers do not understand the `developer` role used for reasoning-capable models. For those providers, set `compat.supportsDeveloperRole` to `false` so the system prompt is sent as a `system` message instead. If the server also does not support `reasoning_effort`, set `compat.supportsReasoningEffort` to `false` too.
 
 This commonly applies to Ollama, vLLM, SGLang, and similar OpenAI-compatible servers. You can set `compat` at the provider level or per model.

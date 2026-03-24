@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { Transport } from "@mariozechner/pi-ai";
+import type { ContextTierPolicy, Transport } from "@mariozechner/pi-ai";
 import {
 	Container,
 	getCapabilities,
@@ -28,6 +28,12 @@ const THINKING_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	xhigh: "Maximum reasoning (~32k tokens)",
 };
 
+const CONTEXT_TIER_DESCRIPTIONS: Record<ContextTierPolicy, string> = {
+	default: "Stay on the default context tier and compact before paid upgrades.",
+	auto: "Use higher context tiers only when needed to fit the next turn.",
+	max: "Target the highest available context tier before compacting.",
+};
+
 export interface SettingsConfig {
 	autoCompact: boolean;
 	showImages: boolean;
@@ -37,6 +43,7 @@ export interface SettingsConfig {
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
 	transport: Transport;
+	contextTierPolicy: ContextTierPolicy;
 	thinkingLevel: ThinkingLevel;
 	availableThinkingLevels: ThinkingLevel[];
 	currentTheme: string;
@@ -61,6 +68,7 @@ export interface SettingsCallbacks {
 	onSteeringModeChange: (mode: "all" | "one-at-a-time") => void;
 	onFollowUpModeChange: (mode: "all" | "one-at-a-time") => void;
 	onTransportChange: (transport: Transport) => void;
+	onContextTierPolicyChange: (policy: ContextTierPolicy) => void;
 	onThinkingLevelChange: (level: ThinkingLevel) => void;
 	onThemeChange: (theme: string) => void;
 	onThemePreview?: (theme: string) => void;
@@ -184,6 +192,28 @@ export class SettingsSelectorComponent extends Container {
 				description: "Preferred transport for providers that support multiple transports",
 				currentValue: config.transport,
 				values: ["sse", "websocket", "auto"],
+			},
+			{
+				id: "context-tier-policy",
+				label: "Context tier policy",
+				description: "How multi-tier context models use higher-priced context windows",
+				currentValue: config.contextTierPolicy,
+				submenu: (currentValue, done) =>
+					new SelectSubmenu(
+						"Context Tier Policy",
+						"Choose how pi uses larger context tiers when a model exposes them",
+						(["default", "auto", "max"] as const).map((policy) => ({
+							value: policy,
+							label: policy,
+							description: CONTEXT_TIER_DESCRIPTIONS[policy],
+						})),
+						currentValue,
+						(value) => {
+							callbacks.onContextTierPolicyChange(value as ContextTierPolicy);
+							done(value);
+						},
+						() => done(),
+					),
 			},
 			{
 				id: "hide-thinking",
