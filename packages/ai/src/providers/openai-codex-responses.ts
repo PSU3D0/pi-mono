@@ -75,6 +75,8 @@ interface RequestBody {
 	text?: { verbosity?: string };
 	include?: string[];
 	prompt_cache_key?: string;
+	previous_response_id?: string;
+	generate?: boolean;
 	[key: string]: unknown;
 }
 
@@ -472,6 +474,14 @@ interface CachedWebSocketConnection {
 	socket: WebSocketLike;
 	busy: boolean;
 	idleTimer?: ReturnType<typeof setTimeout>;
+	/** Last response ID returned by the server (for incremental requests). */
+	lastResponseId?: string;
+	/** The full input array from the last request (for computing deltas). */
+	lastRequestInput?: ResponseInput;
+	/** Output items the server added in the last response (assistant messages, tool calls, etc.). */
+	lastResponseItems?: ResponseInput;
+	/** Whether a prewarm (generate=false) has completed on this connection. */
+	prewarmed?: boolean;
 }
 
 const websocketSessionCache = new Map<string, CachedWebSocketConnection>();
@@ -790,6 +800,75 @@ async function* parseWebSocket(socket: WebSocketLike, signal?: AbortSignal): Asy
 	}
 }
 
+// ============================================================================
+// Incremental Input Helpers
+// ============================================================================
+
+/**
+ * Check if `current` is a strict prefix-extension of `baseline` and return only
+ * the new items. Returns undefined if the inputs diverge (non-incremental).
+ *
+ * This mirrors the Codex CLI logic in `get_incremental_items()`: we compare
+ * serialized JSON of each baseline item against the corresponding current item
+ * to detect prefix identity cheaply.
+ */
+function computeIncrementalInput(baseline: ResponseInput, current: ResponseInput): ResponseInput | undefined {
+	if (current.length < baseline.length) return undefined;
+	for (let i = 0; i < baseline.length; i++) {
+		if (JSON.stringify(baseline[i]) !== JSON.stringify(current[i])) {
+			return undefined;
+		}
+	}
+	return current.slice(baseline.length);
+}
+
+/**
+ * Collect output items (assistant messages, tool calls, reasoning) from a
+ * response.completed event, formatted as ResponseInput items so they can be
+ * used as part of the baseline for the next incremental request.
+ */
+function collectResponseOutputItems(event: Record<string, unknown>): ResponseInput {
+	const response = event.response as { output?: Array<Record<string, unknown>> } | undefined;
+	if (!response?.output) return [];
+	// The output items from the Responses API are already in ResponseInput shape.
+	return response.output as unknown as ResponseInput;
+}
+
+// ============================================================================
+// WebSocket Prewarm
+// ============================================================================
+
+/**
+ * Send a generate=false prewarm request and wait for its completion.
+ * This primes the server-side cache so the next real request benefits from
+ * `previous_response_id` and avoids cold-start latency.
+ */
+async function prewarmWebSocket(
+	socket: WebSocketLike,
+	body: RequestBody,
+	signal?: AbortSignal,
+): Promise<{ responseId: string } | undefined> {
+	const prewarmBody = { type: "response.create", ...body, generate: false };
+	socket.send(JSON.stringify(prewarmBody));
+
+	for await (const event of parseWebSocket(socket, signal)) {
+		const type = typeof event.type === "string" ? event.type : "";
+		if (type === "response.completed" || type === "response.done") {
+			const response = event.response as { id?: string } | undefined;
+			return response?.id ? { responseId: response.id } : undefined;
+		}
+		if (type === "error" || type === "response.failed") {
+			// Prewarm is best-effort; swallow errors silently.
+			return undefined;
+		}
+	}
+	return undefined;
+}
+
+// ============================================================================
+// WebSocket Stream Processing
+// ============================================================================
+
 async function processWebSocketStream(
 	url: string,
 	body: RequestBody,
@@ -800,21 +879,99 @@ async function processWebSocketStream(
 	onStart: () => void,
 	options?: OpenAICodexResponsesOptions,
 ): Promise<void> {
-	const { socket, release } = await acquireWebSocket(url, headers, options?.sessionId, options?.signal);
+	const sessionId = options?.sessionId;
+	const { socket, release } = await acquireWebSocket(url, headers, sessionId, options?.signal);
+	const cached = sessionId ? websocketSessionCache.get(sessionId) : undefined;
 	let keepConnection = true;
+
 	try {
-		socket.send(JSON.stringify({ type: "response.create", ...body }));
+		// --- Prewarm: on fresh connections, send generate=false to prime the cache ---
+		if (cached && !cached.prewarmed && !cached.lastResponseId) {
+			const prewarmResult = await prewarmWebSocket(socket, body, options?.signal);
+			cached.prewarmed = true;
+			if (prewarmResult?.responseId) {
+				cached.lastResponseId = prewarmResult.responseId;
+				cached.lastRequestInput = body.input as ResponseInput;
+				cached.lastResponseItems = [];
+			}
+		}
+
+		// --- Build the wire payload, using incremental delta when possible ---
+		let wireBody: RequestBody;
+		const currentInput = (body.input ?? []) as ResponseInput;
+
+		if (cached?.lastResponseId && cached.lastRequestInput) {
+			// Compute the baseline: last request input + server output items
+			const baseline: ResponseInput = [...cached.lastRequestInput, ...(cached.lastResponseItems ?? [])];
+			const delta = computeIncrementalInput(baseline, currentInput);
+
+			if (delta !== undefined) {
+				wireBody = {
+					...body,
+					previous_response_id: cached.lastResponseId,
+					input: delta,
+				};
+			} else {
+				// Non-incremental: send full input, no previous_response_id
+				wireBody = body;
+			}
+		} else {
+			wireBody = body;
+		}
+
+		socket.send(JSON.stringify({ type: "response.create", ...wireBody }));
 		onStart();
 		stream.push({ type: "start", partial: output });
-		await processResponsesStream(mapCodexEvents(parseWebSocket(socket, options?.signal)), output, stream, model);
+
+		// Track the last response.completed event for incremental state
+		let completedEvent: Record<string, unknown> | undefined;
+		const wrappedStream = trackCompletedEvent(mapCodexEvents(parseWebSocket(socket, options?.signal)), (evt) => {
+			completedEvent = evt;
+		});
+
+		await processResponsesStream(wrappedStream, output, stream, model);
+
+		// Update incremental state for the next request on this connection
+		if (cached && completedEvent) {
+			const response = completedEvent.response as { id?: string } | undefined;
+			if (response?.id) {
+				cached.lastResponseId = response.id;
+				cached.lastRequestInput = currentInput;
+				cached.lastResponseItems = collectResponseOutputItems(completedEvent);
+			}
+		}
+
 		if (options?.signal?.aborted) {
 			keepConnection = false;
 		}
 	} catch (error) {
 		keepConnection = false;
+		// On error, clear incremental state so next request uses full input
+		if (cached) {
+			cached.lastResponseId = undefined;
+			cached.lastRequestInput = undefined;
+			cached.lastResponseItems = undefined;
+		}
 		throw error;
 	} finally {
 		release({ keep: keepConnection });
+	}
+}
+
+/**
+ * Wraps an async iterable of ResponseStreamEvents to capture the raw
+ * response.completed event for incremental state tracking, while still
+ * yielding all events through to the consumer.
+ */
+async function* trackCompletedEvent(
+	events: AsyncIterable<ResponseStreamEvent>,
+	onCompleted: (raw: Record<string, unknown>) => void,
+): AsyncGenerator<ResponseStreamEvent> {
+	for await (const event of events) {
+		if (event.type === "response.completed") {
+			onCompleted(event as unknown as Record<string, unknown>);
+		}
+		yield event;
 	}
 }
 
