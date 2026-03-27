@@ -504,7 +504,7 @@ export class AuthStorage {
 	 * 5. Environment variable
 	 * 6. Fallback resolver (models.json custom providers)
 	 */
-	async getApiKey(providerId: string): Promise<string | undefined> {
+	async getApiKey(providerId: string, options?: { includeFallback?: boolean }): Promise<string | undefined> {
 		// Runtime override takes highest priority
 		const runtimeKey = this.runtimeOverrides.get(providerId);
 		if (runtimeKey) {
@@ -571,7 +571,11 @@ export class AuthStorage {
 		if (envKey) return envKey;
 
 		// Fall back to custom resolver (e.g., models.json custom providers)
-		return this.fallbackResolver?.(providerId) ?? undefined;
+		if (options?.includeFallback !== false) {
+			return this.fallbackResolver?.(providerId) ?? undefined;
+		}
+
+		return undefined;
 	}
 
 	/**

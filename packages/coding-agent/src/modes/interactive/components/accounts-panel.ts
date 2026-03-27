@@ -9,7 +9,7 @@
  */
 
 import type { AccountInfo } from "@mariozechner/pi-ai/antigravity-account-pool";
-import { Container, getEditorKeybindings, Spacer, TruncatedText } from "@mariozechner/pi-tui";
+import { Container, getKeybindings, Spacer, TruncatedText } from "@mariozechner/pi-tui";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 
@@ -123,15 +123,15 @@ export class AccountsPanelComponent extends Container {
 	}
 
 	handleInput(keyData: string): void {
-		const kb = getEditorKeybindings();
+		const kb = getKeybindings();
 
-		if (kb.matches(keyData, "selectUp")) {
+		if (kb.matches(keyData, "tui.select.up")) {
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
 			this.updateList();
-		} else if (kb.matches(keyData, "selectDown")) {
+		} else if (kb.matches(keyData, "tui.select.down")) {
 			this.selectedIndex = Math.min(this.accounts.length - 1, this.selectedIndex + 1);
 			this.updateList();
-		} else if (kb.matches(keyData, "selectConfirm")) {
+		} else if (kb.matches(keyData, "tui.select.confirm")) {
 			// Enter: Toggle enable/disable
 			if (this.accounts.length > 0 && this.selectedIndex < this.accounts.length) {
 				this.onAction("toggle", this.accounts[this.selectedIndex]!.index);
@@ -142,7 +142,7 @@ export class AccountsPanelComponent extends Container {
 			if (this.accounts.length > 0 && this.selectedIndex < this.accounts.length) {
 				this.onAction("remove", this.accounts[this.selectedIndex]!.index);
 			}
-		} else if (kb.matches(keyData, "selectCancel")) {
+		} else if (kb.matches(keyData, "tui.select.cancel")) {
 			this.onClose();
 		}
 	}

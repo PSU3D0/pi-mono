@@ -99,6 +99,7 @@ export interface Settings {
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
+	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -533,6 +534,10 @@ export class SettingsManager {
 		this.globalSettings.lastChangelogVersion = version;
 		this.markModified("lastChangelogVersion");
 		this.save();
+	}
+
+	getSessionDir(): string | undefined {
+		return this.settings.sessionDir;
 	}
 
 	getDefaultProvider(): string | undefined {
