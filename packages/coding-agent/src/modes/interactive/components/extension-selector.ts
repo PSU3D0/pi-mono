@@ -3,7 +3,7 @@
  * Displays a list of string options with keyboard navigation.
  */
 
-import { Container, getKeybindings, Spacer, Text, type TUI } from "@mariozechner/pi-tui";
+import { Box, Container, getKeybindings, Spacer, Text, type TUI } from "@mariozechner/pi-tui";
 import { theme } from "../theme/theme.js";
 import { CountdownTimer } from "./countdown-timer.js";
 import { DynamicBorder } from "./dynamic-border.js";
@@ -38,12 +38,15 @@ export class ExtensionSelectorComponent extends Container {
 		this.onCancelCallback = onCancel;
 		this.baseTitle = title;
 
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
+		const bgFn = (text: string) => theme.bg("toolPendingBg", text);
+		const contentBox = new Box(1, 0, bgFn);
+
+		contentBox.addChild(new DynamicBorder());
+		contentBox.addChild(new Spacer(1));
 
 		this.titleText = new Text(theme.fg("accent", title), 1, 0);
-		this.addChild(this.titleText);
-		this.addChild(new Spacer(1));
+		contentBox.addChild(this.titleText);
+		contentBox.addChild(new Spacer(1));
 
 		if (opts?.timeout && opts.timeout > 0 && opts.tui) {
 			this.countdown = new CountdownTimer(
@@ -55,9 +58,9 @@ export class ExtensionSelectorComponent extends Container {
 		}
 
 		this.listContainer = new Container();
-		this.addChild(this.listContainer);
-		this.addChild(new Spacer(1));
-		this.addChild(
+		contentBox.addChild(this.listContainer);
+		contentBox.addChild(new Spacer(1));
+		contentBox.addChild(
 			new Text(
 				rawKeyHint("↑↓", "navigate") +
 					"  " +
@@ -68,8 +71,10 @@ export class ExtensionSelectorComponent extends Container {
 				0,
 			),
 		);
-		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
+		contentBox.addChild(new Spacer(1));
+		contentBox.addChild(new DynamicBorder());
+
+		this.addChild(contentBox);
 
 		this.updateList();
 	}

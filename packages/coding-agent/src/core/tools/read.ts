@@ -10,7 +10,7 @@ import { formatDimensionNote, resizeImage } from "../../utils/image-resize.js";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
 import { resolveReadPath } from "./path-utils.js";
-import { getTextOutput, invalidArgText, replaceTabs, shortenPath, str } from "./render-utils.js";
+import { fileHyperlink, getTextOutput, invalidArgText, replaceTabs, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.js";
 
@@ -55,13 +55,18 @@ export interface ReadToolOptions {
 function formatReadCall(
 	args: { path?: string; file_path?: string; offset?: number; limit?: number } | undefined,
 	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
+	cwd?: string,
 ): string {
 	const rawPath = str(args?.file_path ?? args?.path);
 	const path = rawPath !== null ? shortenPath(rawPath) : null;
 	const offset = args?.offset;
 	const limit = args?.limit;
 	const invalidArg = invalidArgText(theme);
-	let pathDisplay = path === null ? invalidArg : path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
+	let styledPath = path === null ? invalidArg : path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
+	if (path && rawPath && cwd) {
+		styledPath = fileHyperlink(styledPath, rawPath, cwd);
+	}
+	let pathDisplay = styledPath;
 	if (offset !== undefined || limit !== undefined) {
 		const startLine = offset ?? 1;
 		const endLine = limit !== undefined ? startLine + limit - 1 : "";
@@ -249,7 +254,7 @@ export function createReadToolDefinition(
 		},
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatReadCall(args, theme));
+			text.setText(formatReadCall(args, theme, context.cwd));
 			return text;
 		},
 		renderResult(result, options, theme, context) {

@@ -189,22 +189,24 @@ function applySgrCode(params: number[], style: TextStyle): void {
 	}
 }
 
-// Match ANSI escape sequences: ESC[ followed by params and ending with 'm'
-const ANSI_REGEX = /\x1b\[([\d;]*)m/g;
+// Match ANSI SGR sequences (ESC[ ... m) and OSC 8 hyperlinks (ESC]8;;<url> BEL or ST)
+const ANSI_OR_OSC8_REGEX = /\x1b\[([\d;]*)m|\x1b\]8;([^;]*);(.*?)(?:\x07|\x1b\\)/g;
 
 /**
  * Convert ANSI-escaped text to HTML with inline styles.
+ * Handles both CSI SGR codes (colors/styles) and OSC 8 hyperlinks.
  */
 export function ansiToHtml(text: string): string {
 	const style = createEmptyStyle();
 	let result = "";
 	let lastIndex = 0;
 	let inSpan = false;
+	let inAnchor = false;
 
 	// Reset regex state
-	ANSI_REGEX.lastIndex = 0;
+	ANSI_OR_OSC8_REGEX.lastIndex = 0;
 
-	let match = ANSI_REGEX.exec(text);
+	let match = ANSI_OR_OSC8_REGEX.exec(text);
 	while (match !== null) {
 		// Add text before this escape sequence
 		const beforeText = text.slice(lastIndex, match.index);
@@ -212,27 +214,47 @@ export function ansiToHtml(text: string): string {
 			result += escapeHtml(beforeText);
 		}
 
-		// Parse SGR parameters
-		const paramStr = match[1];
-		const params = paramStr ? paramStr.split(";").map((p) => parseInt(p, 10) || 0) : [0];
+		if (match[1] !== undefined) {
+			// CSI SGR sequence: \x1b[...m
+			const paramStr = match[1];
+			const params = paramStr ? paramStr.split(";").map((p) => parseInt(p, 10) || 0) : [0];
 
-		// Close existing span if we have one
-		if (inSpan) {
-			result += "</span>";
-			inSpan = false;
-		}
+			// Close existing span if we have one
+			if (inSpan) {
+				result += "</span>";
+				inSpan = false;
+			}
 
-		// Apply the codes
-		applySgrCode(params, style);
+			// Apply the codes
+			applySgrCode(params, style);
 
-		// Open new span if we have any styling
-		if (hasStyle(style)) {
-			result += `<span style="${styleToInlineCSS(style)}">`;
-			inSpan = true;
+			// Open new span if we have any styling
+			if (hasStyle(style)) {
+				result += `<span style="${styleToInlineCSS(style)}">`;
+				inSpan = true;
+			}
+		} else {
+			// OSC 8 hyperlink: \x1b]8;<params>;<url>\x07
+			const url = match[3];
+
+			if (url) {
+				// Open hyperlink
+				if (inAnchor) {
+					result += "</a>";
+				}
+				result += `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">`;
+				inAnchor = true;
+			} else {
+				// Close hyperlink (empty URL = link end)
+				if (inAnchor) {
+					result += "</a>";
+					inAnchor = false;
+				}
+			}
 		}
 
 		lastIndex = match.index + match[0].length;
-		match = ANSI_REGEX.exec(text);
+		match = ANSI_OR_OSC8_REGEX.exec(text);
 	}
 
 	// Add remaining text
@@ -241,9 +263,12 @@ export function ansiToHtml(text: string): string {
 		result += escapeHtml(remainingText);
 	}
 
-	// Close any open span
+	// Close any open tags
 	if (inSpan) {
 		result += "</span>";
+	}
+	if (inAnchor) {
+		result += "</a>";
 	}
 
 	return result;

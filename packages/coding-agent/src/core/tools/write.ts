@@ -8,7 +8,7 @@ import { getLanguageFromPath, highlightCode } from "../../modes/interactive/them
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
 import { withFileMutationQueue } from "./file-mutation-queue.js";
 import { resolveToCwd } from "./path-utils.js";
-import { invalidArgText, normalizeDisplayText, replaceTabs, shortenPath, str } from "./render-utils.js";
+import { fileHyperlink, invalidArgText, normalizeDisplayText, replaceTabs, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
 const writeSchema = Type.Object({
@@ -133,12 +133,17 @@ function formatWriteCall(
 	options: ToolRenderResultOptions,
 	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
 	cache: WriteHighlightCache | undefined,
+	cwd?: string,
 ): string {
 	const rawPath = str(args?.file_path ?? args?.path);
 	const fileContent = str(args?.content);
 	const path = rawPath !== null ? shortenPath(rawPath) : null;
 	const invalidArg = invalidArgText(theme);
-	let text = `${theme.fg("toolTitle", theme.bold("write"))} ${path === null ? invalidArg : path ? theme.fg("accent", path) : theme.fg("toolOutput", "...")}`;
+	let styledPath = path === null ? invalidArg : path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
+	if (path && rawPath && cwd) {
+		styledPath = fileHyperlink(styledPath, rawPath, cwd);
+	}
+	let text = `${theme.fg("toolTitle", theme.bold("write"))} ${styledPath}`;
 
 	if (fileContent === null) {
 		text += `\n\n${theme.fg("error", "[invalid content arg - expected string]")}`;
@@ -258,6 +263,7 @@ export function createWriteToolDefinition(
 					{ expanded: context.expanded, isPartial: context.isPartial },
 					theme,
 					component.cache,
+					context.cwd,
 				),
 			);
 			return component;

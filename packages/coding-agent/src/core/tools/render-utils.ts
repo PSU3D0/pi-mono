@@ -1,8 +1,10 @@
 import * as os from "node:os";
+import { isAbsolute, resolve as resolvePath } from "node:path";
 import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
 import { getCapabilities, getImageDimensions, imageFallback } from "@mariozechner/pi-tui";
 import stripAnsi from "strip-ansi";
 import { sanitizeBinaryOutput } from "../../utils/shell.js";
+import { expandPath } from "./path-utils.js";
 
 export function shortenPath(path: unknown): string {
 	if (typeof path !== "string") return "";
@@ -61,4 +63,24 @@ export type ToolRenderResultLike<TDetails> = {
 
 export function invalidArgText(theme: { fg: (name: any, text: string) => string }): string {
 	return theme.fg("error", "[invalid arg]");
+}
+
+/**
+ * Wrap display text in an OSC 8 hyperlink pointing to a file:// URI.
+ * If the raw path can't be resolved to an absolute path, returns displayText unchanged.
+ *
+ * @param displayText - The already-styled text to wrap (may contain ANSI codes)
+ * @param rawPath - The original file path argument (may be relative or use ~)
+ * @param cwd - Working directory for resolving relative paths
+ * @returns displayText wrapped in OSC 8 open/close sequences
+ */
+export function fileHyperlink(displayText: string, rawPath: string, cwd: string): string {
+	try {
+		const expanded = expandPath(rawPath);
+		const absolutePath = isAbsolute(expanded) ? expanded : resolvePath(cwd, expanded);
+		const encodedPath = encodeURI(absolutePath).replace(/#/g, "%23").replace(/\?/g, "%3F");
+		return `\x1b]8;;file://${encodedPath}\x07${displayText}\x1b]8;;\x07`;
+	} catch {
+		return displayText;
+	}
 }

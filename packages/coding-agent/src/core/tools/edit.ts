@@ -16,7 +16,7 @@ import {
 } from "./edit-diff.js";
 import { withFileMutationQueue } from "./file-mutation-queue.js";
 import { resolveToCwd } from "./path-utils.js";
-import { invalidArgText, shortenPath, str } from "./render-utils.js";
+import { fileHyperlink, invalidArgText, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
 type EditRenderState = Record<string, never>;
@@ -114,12 +114,16 @@ type RenderableEditArgs = {
 function formatEditCall(
 	args: RenderableEditArgs | undefined,
 	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
+	cwd?: string,
 ): string {
 	const invalidArg = invalidArgText(theme);
 	const rawPath = str(args?.file_path ?? args?.path);
 	const path = rawPath !== null ? shortenPath(rawPath) : null;
-	const pathDisplay = path === null ? invalidArg : path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
-	return `${theme.fg("toolTitle", theme.bold("edit"))} ${pathDisplay}`;
+	let styledPath = path === null ? invalidArg : path ? theme.fg("accent", path) : theme.fg("toolOutput", "...");
+	if (path && rawPath && cwd) {
+		styledPath = fileHyperlink(styledPath, rawPath, cwd);
+	}
+	return `${theme.fg("toolTitle", theme.bold("edit"))} ${styledPath}`;
 }
 
 function formatEditResult(
@@ -281,7 +285,7 @@ export function createEditToolDefinition(
 		},
 		renderCall(args, theme, context) {
 			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-			text.setText(formatEditCall(args, theme));
+			text.setText(formatEditCall(args, theme, context.cwd));
 			return text;
 		},
 		renderResult(result, _options, theme, context) {

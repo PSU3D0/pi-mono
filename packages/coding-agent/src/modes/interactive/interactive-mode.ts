@@ -227,6 +227,7 @@ export class InteractiveMode {
 
 	// Extension UI state
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
+	private extensionSelectorOverlay: OverlayHandle | undefined = undefined;
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private extensionTerminalInputUnsubscribers = new Set<() => void>();
@@ -1653,22 +1654,24 @@ export class InteractiveMode {
 				{ tui: this.ui, timeout: opts?.timeout },
 			);
 
-			this.editorContainer.clear();
-			this.editorContainer.addChild(this.extensionSelector);
-			this.ui.setFocus(this.extensionSelector);
+			this.extensionSelectorOverlay = this.ui.showOverlay(this.extensionSelector, {
+				width: "80%",
+				minWidth: 40,
+				maxHeight: "70%",
+				anchor: "center",
+			});
 			this.ui.requestRender();
 		});
 	}
 
 	/**
-	 * Hide the extension selector.
+	 * Hide the extension selector overlay.
 	 */
 	private hideExtensionSelector(): void {
 		this.extensionSelector?.dispose();
-		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
+		this.extensionSelectorOverlay?.hide();
+		this.extensionSelectorOverlay = undefined;
 		this.extensionSelector = undefined;
-		this.ui.setFocus(this.editor);
 		this.ui.requestRender();
 	}
 

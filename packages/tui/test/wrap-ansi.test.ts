@@ -100,6 +100,95 @@ describe("wrapTextWithAnsi", () => {
 		});
 	});
 
+	describe("OSC 8 hyperlinks", () => {
+		const oscOpen = (url: string) => `\x1b]8;;${url}\x07`;
+		const oscClose = "\x1b]8;;\x07";
+
+		it("should preserve OSC 8 hyperlink across wrapped lines", () => {
+			const url = "file:///home/user/project/src/very/deep/nested/file.ts";
+			const text = `read ${oscOpen(url)}src/very/deep/nested/file.ts${oscClose}`;
+
+			const wrapped = wrapTextWithAnsi(text, 20);
+
+			assert.ok(wrapped.length >= 2, `expected at least 2 lines, got ${wrapped.length}`);
+
+			// Find lines that contain hyperlink content
+			const hyperlinkLines = wrapped.filter((l) => l.includes(oscOpen(url)));
+			assert.ok(hyperlinkLines.length >= 2, "hyperlink should span at least 2 lines");
+
+			// Each hyperlink line except the last should close the link at line end
+			for (let i = 0; i < hyperlinkLines.length - 1; i++) {
+				assert.ok(hyperlinkLines[i].endsWith(oscClose), `hyperlink line ${i} should close at end`);
+			}
+
+			// Each continuation line should re-open the hyperlink
+			for (let i = 1; i < hyperlinkLines.length; i++) {
+				assert.ok(hyperlinkLines[i].includes(oscOpen(url)), `continuation line ${i} should re-open hyperlink`);
+			}
+
+			// All lines should have correct visible width
+			for (const line of wrapped) {
+				assert.ok(visibleWidth(line) <= 20, `line exceeded width: ${visibleWidth(line)}`);
+			}
+		});
+
+		it("should not emit hyperlink codes when no hyperlink is active", () => {
+			const text = "plain text that wraps around";
+			const wrapped = wrapTextWithAnsi(text, 15);
+
+			for (const line of wrapped) {
+				assert.ok(!line.includes("\x1b]8;"), "plain text should not contain OSC 8 codes");
+			}
+		});
+
+		it("should handle hyperlink combined with SGR styling across wraps", () => {
+			const url = "file:///tmp/test.txt";
+			const cyan = "\x1b[36m";
+			const text = `edit ${cyan}${oscOpen(url)}some/long/path/to/file.txt${oscClose}\x1b[0m`;
+
+			const wrapped = wrapTextWithAnsi(text, 18);
+
+			assert.ok(wrapped.length >= 2);
+
+			// Continuation lines should have both color and hyperlink restored
+			for (let i = 1; i < wrapped.length; i++) {
+				assert.ok(wrapped[i].includes(oscOpen(url)), `line ${i} should re-open hyperlink`);
+				assert.ok(wrapped[i].includes("[36m") || wrapped[i].includes(";36m"), `line ${i} should have cyan color`);
+			}
+		});
+
+		it("should handle hyperlink that fits on one line without adding extra codes", () => {
+			const url = "file:///tmp/f.ts";
+			const text = `${oscOpen(url)}short${oscClose}`;
+
+			const wrapped = wrapTextWithAnsi(text, 40);
+
+			assert.strictEqual(wrapped.length, 1);
+			assert.ok(wrapped[0].includes(oscOpen(url)));
+			assert.ok(wrapped[0].includes(oscClose));
+		});
+
+		it("should close hyperlink at line end to prevent bleed into padding", () => {
+			const url = "file:///tmp/test.txt";
+			const text = `${oscOpen(url)}this text will definitely wrap to multiple lines${oscClose}`;
+
+			const wrapped = wrapTextWithAnsi(text, 20);
+
+			assert.ok(wrapped.length >= 2);
+			// Each line except the last should end with hyperlink close
+			for (let i = 0; i < wrapped.length - 1; i++) {
+				assert.ok(wrapped[i].endsWith(oscClose), `line ${i} should end with hyperlink close`);
+			}
+		});
+
+		it("should not count OSC 8 sequences toward visible width", () => {
+			const url = "file:///home/user/project/long/path.ts";
+			const text = `${oscOpen(url)}hello${oscClose}`;
+
+			assert.strictEqual(visibleWidth(text), 5);
+		});
+	});
+
 	describe("basic wrapping", () => {
 		it("should wrap plain text correctly", () => {
 			const text = "hello world this is a test";
