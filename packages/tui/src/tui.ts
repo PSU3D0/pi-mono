@@ -779,7 +779,7 @@ export class TUI extends Container {
 		return result;
 	}
 
-	private static readonly SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07";
+	private static readonly SEGMENT_RESET = "\x1b[0m";
 
 	private applyLineResets(lines: string[]): string[] {
 		const reset = TUI.SEGMENT_RESET;
