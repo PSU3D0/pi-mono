@@ -13,7 +13,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "fs";
-import { readdir, readFile, stat } from "fs/promises";
+import { open, readdir, readFile, stat } from "fs/promises";
 import { join, resolve } from "path";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
 import {
@@ -541,6 +541,143 @@ function getSessionModifiedDate(entries: FileEntry[], header: SessionHeader, sta
 	return !Number.isNaN(headerTime) ? new Date(headerTime) : statsMtime;
 }
 
+/**
+ * Fast session info builder that reads only the first and last chunks of the file.
+ * Avoids reading multi-MB session files entirely just to show a list entry.
+ *
+ * Extracts: session header (first line), first user message (first chunk),
+ * latest session_info/name (last chunk), and uses file stat for modified date.
+ *
+ * allMessagesText is left empty — populated lazily on first search query.
+ * messageCount is approximated from file size.
+ */
+async function buildSessionInfoFast(filePath: string): Promise<SessionInfo | null> {
+	const CHUNK_SIZE = 8192; // 8KB — enough for header + first message + a few entries
+
+	let fh;
+	try {
+		const stats = await stat(filePath);
+		fh = await open(filePath, "r");
+		const fileSize = stats.size;
+
+		// Read the first chunk
+		const headBuf = Buffer.alloc(Math.min(CHUNK_SIZE, fileSize));
+		await fh.read(headBuf, 0, headBuf.length, 0);
+		const headText = headBuf.toString("utf8");
+		const headLines = headText.split("\n").filter((l) => l.trim());
+
+		// Parse header (first line)
+		if (headLines.length === 0) return null;
+		let header: FileEntry;
+		try {
+			header = JSON.parse(headLines[0]) as FileEntry;
+		} catch {
+			return null;
+		}
+		if (header.type !== "session") return null;
+
+		// Scan head chunk for first user message and any session_info
+		let firstMessage = "";
+		let name: string | undefined;
+		let headMessageCount = 0;
+		for (let i = 1; i < headLines.length; i++) {
+			try {
+				const entry = JSON.parse(headLines[i]) as FileEntry;
+				if (entry.type === "session_info") {
+					name = (entry as SessionInfoEntry).name?.trim() || undefined;
+				}
+				if (entry.type === "message") {
+					headMessageCount++;
+					if (!firstMessage) {
+						const message = (entry as SessionMessageEntry).message;
+						if (isMessageWithContent(message) && message.role === "user") {
+							firstMessage = extractTextContent(message) || "";
+						}
+					}
+				}
+			} catch {
+				// skip malformed
+			}
+		}
+
+		// Read the last chunk (if file is larger than one chunk)
+		let lastActivityTimestamp: number | undefined;
+		if (fileSize > CHUNK_SIZE) {
+			const tailOffset = Math.max(0, fileSize - CHUNK_SIZE);
+			const tailBuf = Buffer.alloc(Math.min(CHUNK_SIZE, fileSize - tailOffset));
+			await fh.read(tailBuf, 0, tailBuf.length, tailOffset);
+			const tailText = tailBuf.toString("utf8");
+			// Skip first partial line (may be truncated)
+			const firstNewline = tailText.indexOf("\n");
+			const tailContent = firstNewline >= 0 ? tailText.slice(firstNewline + 1) : tailText;
+			const tailLines = tailContent.split("\n").filter((l) => l.trim());
+
+			for (const line of tailLines) {
+				try {
+					const entry = JSON.parse(line) as FileEntry;
+					// Use last session_info for name
+					if (entry.type === "session_info") {
+						name = (entry as SessionInfoEntry).name?.trim() || undefined;
+					}
+					// Track last activity timestamp for modified date
+					if (entry.type === "message") {
+						const message = (entry as SessionMessageEntry).message;
+						if (isMessageWithContent(message) && (message.role === "user" || message.role === "assistant")) {
+							const msgTs = (message as { timestamp?: number }).timestamp;
+							if (typeof msgTs === "number") {
+								lastActivityTimestamp = Math.max(lastActivityTimestamp ?? 0, msgTs);
+							} else {
+								const entryTs = (entry as SessionEntryBase).timestamp;
+								if (typeof entryTs === "string") {
+									const t = new Date(entryTs).getTime();
+									if (!Number.isNaN(t)) lastActivityTimestamp = Math.max(lastActivityTimestamp ?? 0, t);
+								}
+							}
+						}
+					}
+				} catch {
+					// skip malformed
+				}
+			}
+		}
+
+		const cwd = typeof (header as SessionHeader).cwd === "string" ? (header as SessionHeader).cwd : "";
+		const parentSessionPath = (header as SessionHeader).parentSession;
+		const headerTime = typeof (header as SessionHeader).timestamp === "string"
+			? new Date((header as SessionHeader).timestamp).getTime()
+			: NaN;
+
+		// Modified date: prefer last activity from tail, then header timestamp, then file mtime
+		const modified = lastActivityTimestamp
+			? new Date(lastActivityTimestamp)
+			: !Number.isNaN(headerTime)
+				? new Date(headerTime)
+				: stats.mtime;
+
+		// Approximate message count from file size (very rough — just for display)
+		// Average JSONL line ~2KB for message entries, but many entries are non-messages.
+		// Use a conservative estimate; exact count isn't critical for the list view.
+		const approxMessageCount = headMessageCount > 0 ? Math.max(headMessageCount, Math.round(fileSize / 4096)) : 0;
+
+		return {
+			path: filePath,
+			id: (header as SessionHeader).id,
+			cwd,
+			name,
+			parentSessionPath,
+			created: new Date((header as SessionHeader).timestamp),
+			modified,
+			messageCount: approxMessageCount,
+			firstMessage: firstMessage || "(no messages)",
+			allMessagesText: "", // Deferred — loaded lazily on first search
+		};
+	} catch {
+		return null;
+	} finally {
+		await fh?.close();
+	}
+}
+
 async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	try {
 		const content = await readFile(filePath, "utf8");
@@ -611,6 +748,41 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	}
 }
 
+/**
+ * Populate allMessagesText for sessions that have it empty (from fast loading).
+ * Only loads the full file for sessions that need it. Used lazily on first search.
+ */
+export async function populateSessionSearchText(sessions: SessionInfo[]): Promise<void> {
+	const needsLoad = sessions.filter((s) => !s.allMessagesText);
+	if (needsLoad.length === 0) return;
+
+	await Promise.all(
+		needsLoad.map(async (session) => {
+			try {
+				const content = await readFile(session.path, "utf8");
+				const allMessages: string[] = [];
+				for (const line of content.split("\n")) {
+					if (!line.trim()) continue;
+					try {
+						const entry = JSON.parse(line) as FileEntry;
+						if (entry.type !== "message") continue;
+						const message = (entry as SessionMessageEntry).message;
+						if (!isMessageWithContent(message)) continue;
+						if (message.role !== "user" && message.role !== "assistant") continue;
+						const text = extractTextContent(message);
+						if (text) allMessages.push(text);
+					} catch {
+						// skip
+					}
+				}
+				session.allMessagesText = allMessages.join(" ");
+			} catch {
+				session.allMessagesText = "";
+			}
+		}),
+	);
+}
+
 export type SessionListProgress = (loaded: number, total: number) => void;
 
 async function listSessionsFromDir(
@@ -632,7 +804,7 @@ async function listSessionsFromDir(
 		let loaded = 0;
 		const results = await Promise.all(
 			files.map(async (file) => {
-				const info = await buildSessionInfo(file);
+				const info = await buildSessionInfoFast(file);
 				loaded++;
 				onProgress?.(progressOffset + loaded, total);
 				return info;
@@ -1397,7 +1569,7 @@ export class SessionManager {
 
 			const results = await Promise.all(
 				allFiles.map(async (file) => {
-					const info = await buildSessionInfo(file);
+					const info = await buildSessionInfoFast(file);
 					loaded++;
 					onProgress?.(loaded, totalFiles);
 					return info;

@@ -14,7 +14,7 @@ import {
 	visibleWidth,
 } from "@mariozechner/pi-tui";
 import { KeybindingsManager } from "../../../core/keybindings.js";
-import type { SessionInfo, SessionListProgress } from "../../../core/session-manager.js";
+import { populateSessionSearchText, type SessionInfo, type SessionListProgress } from "../../../core/session-manager.js";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
@@ -342,10 +342,24 @@ class SessionList implements Component, Focusable {
 		this.filterSessions(this.searchInput.getValue());
 	}
 
+	private searchTextLoaded = false;
+	private searchTextLoading = false;
+
 	private filterSessions(query: string): void {
 		const trimmed = query.trim();
 		const nameFiltered =
 			this.nameFilter === "all" ? this.allSessions : this.allSessions.filter((session) => hasSessionName(session));
+
+		// Trigger lazy loading of search text when user types a query for the first time
+		if (trimmed && !this.searchTextLoaded && !this.searchTextLoading) {
+			this.searchTextLoading = true;
+			void populateSessionSearchText(this.allSessions).then(() => {
+				this.searchTextLoaded = true;
+				this.searchTextLoading = false;
+				// Re-filter with now-populated search text
+				this.filterSessions(this.searchInput.getValue());
+			});
+		}
 
 		if (this.sortMode === "threaded" && !trimmed) {
 			// Threaded mode without search: show tree structure
