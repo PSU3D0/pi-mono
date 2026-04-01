@@ -1070,6 +1070,31 @@ export function getLanguageFromPath(filePath: string): string | undefined {
 	return extToLang[ext];
 }
 
+function resolveMarkdownHref(raw: string, kind: "link" | "codespan" | "text"): string | undefined {
+	const text = raw.trim();
+	if (!text || text.includes("\n")) return undefined;
+
+	// Pass through full URLs as-is
+	if (/^[a-z][a-z0-9+.-]*:/i.test(text)) {
+		return text;
+	}
+
+	// Must look path-like: contain a slash, no shell metacharacters, no whitespace
+	if (!(/^(~\/|\.\/|\.\.\/|\/)/.test(text) || text.includes("/"))) return undefined;
+	if (/\s/.test(text)) return undefined;
+	if (/[|&;<>*$`]/.test(text)) return undefined;
+
+	const expanded = text === "~" ? process.env.HOME || "~" : text.startsWith("~/") ? `${process.env.HOME || "~"}${text.slice(1)}` : text;
+	const absolutePath = path.isAbsolute(expanded) ? expanded : path.resolve(process.cwd(), expanded);
+
+	// For inline-code and plain-text paths, require the path to exist to avoid false positives.
+	// Markdown links are more intentional so we allow unresolved paths.
+	if ((kind === "codespan" || kind === "text") && !fs.existsSync(absolutePath)) return undefined;
+
+	const encodedPath = encodeURI(absolutePath).replace(/#/g, "%23").replace(/\?/g, "%3F");
+	return `vscode://file${encodedPath}`;
+}
+
 export function getMarkdownTheme(): MarkdownTheme {
 	return {
 		heading: (text: string) => theme.fg("mdHeading", text),
@@ -1086,6 +1111,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 		italic: (text: string) => theme.italic(text),
 		underline: (text: string) => theme.underline(text),
 		strikethrough: (text: string) => chalk.strikethrough(text),
+		resolveHref: resolveMarkdownHref,
 		highlightCode: (code: string, lang?: string): string[] => {
 			// Validate language before highlighting to avoid stderr spam from cli-highlight
 			const validLang = lang && supportsLanguage(lang) ? lang : undefined;

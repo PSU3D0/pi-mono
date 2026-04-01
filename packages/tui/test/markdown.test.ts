@@ -1,5 +1,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import stripAnsi from "strip-ansi";
 import type { Terminal as XtermTerminalType } from "@xterm/headless";
 import { Chalk } from "chalk";
 import { Markdown } from "../src/components/markdown.js";
@@ -327,7 +328,7 @@ describe("Markdown component", () => {
 
 			const width = 30;
 			const lines = markdown.render(width);
-			const plainLines = lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
+			const plainLines = lines.map((line) => stripAnsi(line).trimEnd());
 
 			for (const line of plainLines) {
 				assert.ok(line.length <= width, `Line exceeds width ${width}: "${line}" (length: ${line.length})`);
@@ -1032,11 +1033,42 @@ bar`,
 	});
 
 	describe("Links", () => {
+		it("should wrap resolved markdown links in OSC 8 hyperlinks", () => {
+			const theme = {
+				...defaultMarkdownTheme,
+				resolveHref: (raw: string) => (raw === "https://example.com" ? raw : undefined),
+			};
+			const markdown = new Markdown("[click here](https://example.com)", 0, 0, theme);
+			const lines = markdown.render(80);
+			const joined = lines.join("\n");
+
+			assert.ok(joined.includes("\x1b]8;;https://example.com\x07"), "should include OSC 8 opener");
+			assert.ok(joined.includes("\x1b]8;;\x07"), "should include OSC 8 closer");
+			assert.ok(stripAnsi(joined).includes("click here (https://example.com)"));
+		});
+
+		it("should wrap inline-code file references in OSC 8 hyperlinks when resolved", () => {
+			const samplePath = "docs/example.md";
+			const href = "vscode://file/home/user/project/docs/example.md";
+			const theme = {
+				...defaultMarkdownTheme,
+				resolveHref: (raw: string, kind: "link" | "codespan") =>
+					kind === "codespan" && raw === samplePath ? href : undefined,
+			};
+			const markdown = new Markdown(`\`${samplePath}\``, 0, 0, theme);
+			const lines = markdown.render(80);
+			const joined = lines.join("\n");
+
+			assert.ok(joined.includes(`\x1b]8;;${href}\x07`), "should include OSC 8 opener for inline code path");
+			assert.ok(joined.includes("\x1b]8;;\x07"), "should include OSC 8 closer for inline code path");
+			assert.ok(stripAnsi(joined).includes(samplePath));
+		});
+
 		it("should not duplicate URL for autolinked emails", () => {
 			const markdown = new Markdown("Contact user@example.com for help", 0, 0, defaultMarkdownTheme);
 
 			const lines = markdown.render(80);
-			const plainLines = lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+			const plainLines = lines.map((line) => stripAnsi(line));
 			const joinedPlain = plainLines.join(" ");
 
 			// Should contain the email once, not duplicated with mailto:
@@ -1048,7 +1080,7 @@ bar`,
 			const markdown = new Markdown("Visit https://example.com for more", 0, 0, defaultMarkdownTheme);
 
 			const lines = markdown.render(80);
-			const plainLines = lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+			const plainLines = lines.map((line) => stripAnsi(line));
 			const joinedPlain = plainLines.join(" ");
 
 			// URL should appear only once
@@ -1060,7 +1092,7 @@ bar`,
 			const markdown = new Markdown("[click here](https://example.com)", 0, 0, defaultMarkdownTheme);
 
 			const lines = markdown.render(80);
-			const plainLines = lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+			const plainLines = lines.map((line) => stripAnsi(line));
 			const joinedPlain = plainLines.join(" ");
 
 			// Should show both link text and URL
@@ -1072,7 +1104,7 @@ bar`,
 			const markdown = new Markdown("[Email me](mailto:test@example.com)", 0, 0, defaultMarkdownTheme);
 
 			const lines = markdown.render(80);
-			const plainLines = lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+			const plainLines = lines.map((line) => stripAnsi(line));
 			const joinedPlain = plainLines.join(" ");
 
 			// Should show both link text and mailto URL

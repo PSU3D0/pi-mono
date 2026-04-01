@@ -41,6 +41,8 @@ export interface MarkdownTheme {
 	italic: (text: string) => string;
 	strikethrough: (text: string) => string;
 	underline: (text: string) => string;
+	/** Optional resolver to turn markdown links, inline-code file paths, or plain-text paths into clickable OSC 8 targets. */
+	resolveHref?: (raw: string, kind: "link" | "codespan" | "text") => string | undefined;
 	highlightCode?: (code: string, lang?: string) => string[];
 	/** Prefix applied to each rendered code block line (default: "  ") */
 	codeBlockIndent?: string;
@@ -420,6 +422,45 @@ export class Markdown implements Component {
 		return lines;
 	}
 
+	private wrapHyperlink(text: string, href: string | undefined): string {
+		if (!href) return text;
+		return `\x1b]8;;${href}\x07${text}\x1b]8;;\x07`;
+	}
+
+	/**
+	 * Render text content, scanning each line for path-like strings and wrapping
+	 * them in hyperlinks. Handles mixed content like "label:\npath" where only
+	 * the path portion should be linked.
+	 */
+	private renderTextWithPathDetection(
+		text: string,
+		applyText: (text: string) => string,
+		applyTextWithNewlines: (text: string) => string,
+	): string {
+		if (!this.theme.resolveHref) return applyTextWithNewlines(text);
+
+		// If single line with no newlines, try whole-token resolution first
+		if (!text.includes("\n")) {
+			const href = this.theme.resolveHref(text, "text");
+			if (href) return this.wrapHyperlink(applyText(text), href);
+			return applyText(text);
+		}
+
+		// Multi-line: process each line independently
+		const lines = text.split("\n");
+		const rendered: string[] = [];
+		for (const line of lines) {
+			const trimmed = line.trim();
+			const href = trimmed ? this.theme.resolveHref(trimmed, "text") : undefined;
+			if (href) {
+				rendered.push(this.wrapHyperlink(applyText(line), href));
+			} else {
+				rendered.push(applyText(line));
+			}
+		}
+		return rendered.join("\n");
+	}
+
 	private renderInlineTokens(tokens: Token[], styleContext?: InlineStyleContext): string {
 		let result = "";
 		const resolvedStyleContext = styleContext ?? this.getDefaultInlineStyleContext();
@@ -435,6 +476,9 @@ export class Markdown implements Component {
 					// Text tokens in list items can have nested tokens for inline formatting
 					if (token.tokens && token.tokens.length > 0) {
 						result += this.renderInlineTokens(token.tokens, resolvedStyleContext);
+					} else if (this.theme.resolveHref) {
+						// Scan each line of the text for path-like strings and wrap them
+						result += this.renderTextWithPathDetection(token.text, applyText, applyTextWithNewlines);
 					} else {
 						result += applyTextWithNewlines(token.text);
 					}
@@ -457,23 +501,22 @@ export class Markdown implements Component {
 					break;
 				}
 
-				case "codespan":
-					result += this.theme.code(token.text) + stylePrefix;
+				case "codespan": {
+					const styledCode = this.theme.code(token.text);
+					const href = this.theme.resolveHref?.(token.text, "codespan");
+					result += this.wrapHyperlink(styledCode, href) + stylePrefix;
 					break;
+				}
 
 				case "link": {
 					const linkText = this.renderInlineTokens(token.tokens || [], resolvedStyleContext);
-					// If link text matches href, only show the link once
-					// Compare raw text (token.text) not styled text (linkText) since linkText has ANSI codes
-					// For mailto: links, strip the prefix before comparing (autolinked emails have
-					// text="foo@bar.com" but href="mailto:foo@bar.com")
 					const hrefForComparison = token.href.startsWith("mailto:") ? token.href.slice(7) : token.href;
+					const resolvedHref = this.theme.resolveHref?.(token.href, "link") ?? token.href;
 					if (token.text === token.href || token.text === hrefForComparison) {
-						result += this.theme.link(this.theme.underline(linkText)) + stylePrefix;
+						result += this.wrapHyperlink(this.theme.link(linkText), resolvedHref) + stylePrefix;
 					} else {
 						result +=
-							this.theme.link(this.theme.underline(linkText)) +
-							this.theme.linkUrl(` (${token.href})`) +
+							this.wrapHyperlink(this.theme.link(linkText) + this.theme.linkUrl(` (${token.href})`), resolvedHref) +
 							stylePrefix;
 					}
 					break;
