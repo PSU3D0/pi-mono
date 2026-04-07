@@ -1,5 +1,4 @@
-import assert from "node:assert";
-import { describe, it } from "node:test";
+import { describe, expect, it } from "vitest";
 import { ansiToHtml } from "../src/core/export-html/ansi-to-html.js";
 
 describe("ansiToHtml", () => {
@@ -10,11 +9,11 @@ describe("ansiToHtml", () => {
 
 			const html = ansiToHtml(text);
 
-			assert.ok(html.includes(`<a href="${url}"`), "should contain anchor tag with URL");
-			assert.ok(html.includes("click here"), "should contain link text");
-			assert.ok(html.includes("</a>"), "should close anchor tag");
-			assert.ok(html.includes('target="_blank"'), "should open in new tab");
-			assert.ok(html.includes('rel="noopener"'), "should have noopener");
+			expect(html).toContain(`<a href="${url}"`);
+			expect(html).toContain("click here");
+			expect(html).toContain("</a>");
+			expect(html).toContain('target="_blank"');
+			expect(html).toContain('rel="noopener"');
 		});
 
 		it("should handle OSC 8 with SGR styling inside", () => {
@@ -23,9 +22,9 @@ describe("ansiToHtml", () => {
 
 			const html = ansiToHtml(text);
 
-			assert.ok(html.includes(`<a href="${url}"`), "should have anchor tag");
-			assert.ok(html.includes("<span"), "should have styled span");
-			assert.ok(html.includes("styled link"), "should have link text");
+			expect(html).toContain(`<a href="${url}"`);
+			expect(html).toContain("<span");
+			expect(html).toContain("styled link");
 		});
 
 		it("should handle OSC 8 terminated with ST (ESC backslash)", () => {
@@ -34,9 +33,9 @@ describe("ansiToHtml", () => {
 
 			const html = ansiToHtml(text);
 
-			assert.ok(html.includes(`<a href="${url}"`), "should handle ST-terminated sequences");
-			assert.ok(html.includes("click"), "should contain link text");
-			assert.ok(html.includes("</a>"), "should close anchor tag");
+			expect(html).toContain(`<a href="${url}"`);
+			expect(html).toContain("click");
+			expect(html).toContain("</a>");
 		});
 
 		it("should escape HTML special chars in URL", () => {
@@ -45,12 +44,11 @@ describe("ansiToHtml", () => {
 
 			const html = ansiToHtml(text);
 
-			assert.ok(html.includes("&amp;"), "should escape ampersand in URL");
+			expect(html).toContain("&amp;");
 		});
 
 		it("should handle text with no escape sequences", () => {
-			const html = ansiToHtml("plain text");
-			assert.strictEqual(html, "plain text");
+			expect(ansiToHtml("plain text")).toBe("plain text");
 		});
 
 		it("should handle mixed SGR and OSC 8 sequences", () => {
@@ -59,11 +57,11 @@ describe("ansiToHtml", () => {
 
 			const html = ansiToHtml(text);
 
-			assert.ok(html.includes("<span"), "should have bold span");
-			assert.ok(html.includes("bold"), "should have bold text");
-			assert.ok(html.includes(`<a href="${url}"`), "should have anchor");
-			assert.ok(html.includes("link"), "should have link text");
-			assert.ok(html.includes(" then plain"), "should have trailing plain text");
+			expect(html).toContain("<span");
+			expect(html).toContain("bold");
+			expect(html).toContain(`<a href="${url}"`);
+			expect(html).toContain("link");
+			expect(html).toContain(" then plain");
 		});
 	});
 });

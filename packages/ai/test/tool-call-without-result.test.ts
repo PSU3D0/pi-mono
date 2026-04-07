@@ -19,6 +19,7 @@ const oauthTokens = await Promise.all([
 	resolveApiKey("openai-codex"),
 ]);
 const [anthropicOAuthToken, githubCopilotToken, geminiCliToken, antigravityToken, openaiCodexToken] = oauthTokens;
+const RUN_LIVE_PROVIDER_TESTS = process.env.PI_RUN_LIVE_PROVIDER_TESTS === "1";
 
 // Simple calculate tool
 const calculateSchema = Type.Object({
@@ -92,7 +93,7 @@ async function testToolCallWithoutResult<TApi extends Api>(model: Model<TApi>, o
 	expect(["stop", "toolUse"]).toContain(secondResponse.stopReason);
 }
 
-describe("Tool Call Without Result Tests", () => {
+describe.skipIf(!RUN_LIVE_PROVIDER_TESTS)("Tool Call Without Result Tests", () => {
 	// =========================================================================
 	// API Key-based providers
 	// =========================================================================

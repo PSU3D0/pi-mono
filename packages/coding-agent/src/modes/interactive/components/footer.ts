@@ -39,6 +39,10 @@ export class FooterComponent implements Component {
 		private footerData: ReadonlyFooterDataProvider,
 	) {}
 
+	setSession(session: AgentSession): void {
+		this.session = session;
+	}
+
 	setAutoCompactEnabled(enabled: boolean): void {
 		this.autoCompactEnabled = enabled;
 	}
@@ -96,7 +100,8 @@ export class FooterComponent implements Component {
 			activeTier !== undefined && allowedTier !== undefined && allowedTier.contextWindow > activeTier.contextWindow;
 
 		// Replace home directory with ~
-		let pwd = process.cwd();
+		const sessionManagerWithCwd = this.session.sessionManager as { getCwd?: () => string };
+		let pwd = sessionManagerWithCwd.getCwd?.() ?? process.cwd();
 		const home = process.env.HOME || process.env.USERPROFILE;
 		if (home && pwd.startsWith(home)) {
 			pwd = `~${pwd.slice(home.length)}`;

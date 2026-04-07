@@ -32,6 +32,7 @@ const oauthTokens = await Promise.all([
 	resolveApiKey("openai-codex"),
 ]);
 const [anthropicOAuthToken, githubCopilotToken, geminiCliToken, antigravityToken, openaiCodexToken] = oauthTokens;
+const RUN_LIVE_PROVIDER_TESTS = process.env.PI_RUN_LIVE_PROVIDER_TESTS === "1";
 
 // Generate a long system prompt to trigger caching (>2k bytes for most providers)
 const LONG_SYSTEM_PROMPT = `You are a helpful assistant. Be concise in your responses.
@@ -99,7 +100,7 @@ function assertTotalTokensEqualsComponents(usage: Usage) {
 	expect(usage.totalTokens).toBe(computed);
 }
 
-describe("totalTokens field", () => {
+describe.skipIf(!RUN_LIVE_PROVIDER_TESTS)("totalTokens field", () => {
 	// =========================================================================
 	// Anthropic
 	// =========================================================================

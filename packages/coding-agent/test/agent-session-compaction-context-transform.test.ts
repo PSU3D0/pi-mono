@@ -12,14 +12,15 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { createTestResourceLoader } from "./utilities.js";
 
-const compactMock = vi.fn(async (preparation: any) => ({
-	summary: "compacted",
-	firstKeptEntryId: preparation.firstKeptEntryId,
-	tokensBefore: preparation.tokensBefore,
-	details: {},
+const { compactMock, prepareCompactionMock } = vi.hoisted(() => ({
+	compactMock: vi.fn(async (preparation: any) => ({
+		summary: "compacted",
+		firstKeptEntryId: preparation.firstKeptEntryId,
+		tokensBefore: preparation.tokensBefore,
+		details: {},
+	})),
+	prepareCompactionMock: vi.fn(() => createPreparation()),
 }));
-
-const prepareCompactionMock = vi.fn(() => createPreparation());
 
 vi.mock("../src/core/compaction/index.js", () => ({
 	calculateContextTokens: () => 0,

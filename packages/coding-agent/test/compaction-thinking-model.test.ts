@@ -27,11 +27,14 @@ import {
 	resolveApiKey,
 } from "./utilities.js";
 
-// Check for auth
+// Live provider tests are opt-in because they depend on external accounts/services.
+const RUN_LIVE_COMPACTION_TESTS = process.env.PI_RUN_LIVE_COMPACTION_TESTS === "1";
 const HAS_ANTIGRAVITY_AUTH = hasAuthForProvider("google-antigravity");
 const HAS_ANTHROPIC_AUTH = !!API_KEY;
 
-describe.skipIf(!HAS_ANTIGRAVITY_AUTH)("Compaction with thinking models (Antigravity)", () => {
+describe.skipIf(!(RUN_LIVE_COMPACTION_TESTS && HAS_ANTIGRAVITY_AUTH))(
+	"Compaction with thinking models (Antigravity)",
+	() => {
 	let session: AgentSession;
 	let tempDir: string;
 	let apiKey: string;
@@ -144,7 +147,9 @@ describe.skipIf(!HAS_ANTIGRAVITY_AUTH)("Compaction with thinking models (Antigra
 // Real Anthropic API tests (for comparison)
 // ============================================================================
 
-describe.skipIf(!HAS_ANTHROPIC_AUTH)("Compaction with thinking models (Anthropic)", () => {
+describe.skipIf(!(RUN_LIVE_COMPACTION_TESTS && HAS_ANTHROPIC_AUTH))(
+	"Compaction with thinking models (Anthropic)",
+	() => {
 	let session: AgentSession;
 	let tempDir: string;
 

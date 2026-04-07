@@ -27,6 +27,7 @@ const oauthTokens = await Promise.all([
 	resolveApiKey("openai-codex"),
 ]);
 const [anthropicOAuthToken, githubCopilotToken, geminiCliToken, antigravityToken, openaiCodexToken] = oauthTokens;
+const RUN_LIVE_PROVIDER_TESTS = process.env.PI_RUN_LIVE_PROVIDER_TESTS === "1";
 
 // Calculator tool definition (same as examples)
 // Note: Using StringEnum helper because Google's API doesn't support anyOf/const patterns
@@ -348,7 +349,7 @@ async function multiTurn<TApi extends Api>(model: Model<TApi>, options?: StreamO
 	expect(allTextContent.includes("887")).toBe(true);
 }
 
-describe("Generate E2E Tests", () => {
+describe.skipIf(!RUN_LIVE_PROVIDER_TESTS)("Generate E2E Tests", () => {
 	describe.skipIf(!process.env.GEMINI_API_KEY)("Gemini Provider (gemini-2.5-flash)", () => {
 		const llm = getModel("google", "gemini-2.5-flash");
 

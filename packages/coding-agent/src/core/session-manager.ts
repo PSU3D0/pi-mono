@@ -576,10 +576,11 @@ async function buildSessionInfoFast(filePath: string): Promise<SessionInfo | nul
 		}
 		if (header.type !== "session") return null;
 
-		// Scan head chunk for first user message and any session_info
+		// Scan head chunk for first user message, session_info, and last activity timestamp.
 		let firstMessage = "";
 		let name: string | undefined;
 		let headMessageCount = 0;
+		let lastActivityTimestamp: number | undefined;
 		for (let i = 1; i < headLines.length; i++) {
 			try {
 				const entry = JSON.parse(headLines[i]) as FileEntry;
@@ -588,10 +589,22 @@ async function buildSessionInfoFast(filePath: string): Promise<SessionInfo | nul
 				}
 				if (entry.type === "message") {
 					headMessageCount++;
-					if (!firstMessage) {
-						const message = (entry as SessionMessageEntry).message;
-						if (isMessageWithContent(message) && message.role === "user") {
+					const message = (entry as SessionMessageEntry).message;
+					if (isMessageWithContent(message)) {
+						if (!firstMessage && message.role === "user") {
 							firstMessage = extractTextContent(message) || "";
+						}
+						if (message.role === "user" || message.role === "assistant") {
+							const msgTs = (message as { timestamp?: number }).timestamp;
+							if (typeof msgTs === "number") {
+								lastActivityTimestamp = Math.max(lastActivityTimestamp ?? 0, msgTs);
+							} else {
+								const entryTs = (entry as SessionEntryBase).timestamp;
+								if (typeof entryTs === "string") {
+									const t = new Date(entryTs).getTime();
+									if (!Number.isNaN(t)) lastActivityTimestamp = Math.max(lastActivityTimestamp ?? 0, t);
+								}
+							}
 						}
 					}
 				}
@@ -601,7 +614,6 @@ async function buildSessionInfoFast(filePath: string): Promise<SessionInfo | nul
 		}
 
 		// Read the last chunk (if file is larger than one chunk)
-		let lastActivityTimestamp: number | undefined;
 		if (fileSize > CHUNK_SIZE) {
 			const tailOffset = Math.max(0, fileSize - CHUNK_SIZE);
 			const tailBuf = Buffer.alloc(Math.min(CHUNK_SIZE, fileSize - tailOffset));
@@ -1442,12 +1454,13 @@ export class SessionManager {
 	 * Open a specific session file.
 	 * @param path Path to session file
 	 * @param sessionDir Optional session directory for /new or /branch. If omitted, derives from file's parent.
+	 * @param cwdOverride Optional cwd override instead of the session header cwd.
 	 */
-	static open(path: string, sessionDir?: string): SessionManager {
+	static open(path: string, sessionDir?: string, cwdOverride?: string): SessionManager {
 		// Extract cwd from session header if possible, otherwise use process.cwd()
 		const entries = loadEntriesFromFile(path);
 		const header = entries.find((e) => e.type === "session") as SessionHeader | undefined;
-		const cwd = header?.cwd ?? process.cwd();
+		const cwd = cwdOverride ?? header?.cwd ?? process.cwd();
 		// If no sessionDir provided, derive from file's parent directory
 		const dir = sessionDir ?? resolve(path, "..");
 		return new SessionManager(cwd, dir, path, true);

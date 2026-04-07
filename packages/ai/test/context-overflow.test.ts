@@ -30,6 +30,7 @@ const oauthTokens = await Promise.all([
 	resolveApiKey("openai-codex"),
 ]);
 const [githubCopilotToken, geminiCliToken, antigravityToken, openaiCodexToken] = oauthTokens;
+const RUN_LIVE_PROVIDER_TESTS = process.env.PI_RUN_LIVE_PROVIDER_TESTS === "1";
 
 // Lorem ipsum paragraph for realistic token estimation
 const LOREM_IPSUM = `Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum. `;
@@ -98,7 +99,7 @@ function logResult(result: OverflowResult) {
 // Expected pattern: "prompt is too long: X tokens > Y maximum"
 // =============================================================================
 
-describe("Context overflow error handling", () => {
+describe.skipIf(!RUN_LIVE_PROVIDER_TESTS)("Context overflow error handling", () => {
 	describe.skipIf(!process.env.ANTHROPIC_API_KEY)("Anthropic (API Key)", () => {
 		it("claude-3-5-haiku - should detect overflow via isContextOverflow", async () => {
 			const model = getModel("anthropic", "claude-3-5-haiku-20241022");
@@ -671,15 +672,21 @@ describe("Context overflow error handling", () => {
 	});
 
 	// =============================================================================
-	// llama.cpp server (local) - Skip if not running
+	// llama.cpp server (local) - Skip if not running or not exposing /v1/completions
 	// =============================================================================
 
 	let llamaCppRunning = false;
-	try {
-		execSync("curl -s --max-time 1 http://localhost:8081/health > /dev/null", { stdio: "ignore" });
-		llamaCppRunning = true;
-	} catch {
-		llamaCppRunning = false;
+	if (!process.env.PI_NO_LOCAL_LLM) {
+		try {
+			execSync("curl -s --max-time 1 http://localhost:8081/health > /dev/null", { stdio: "ignore" });
+			const probeStatus = execSync(
+				'curl -s --max-time 1 -o /dev/null -w \'%{http_code}\' -X POST http://localhost:8081/v1/completions -H \'content-type: application/json\' -d \'{"model":"local-model","prompt":"ping","max_tokens":1}\'',
+				{ encoding: "utf8" },
+			).trim();
+			llamaCppRunning = probeStatus !== "404" && probeStatus !== "405" && probeStatus !== "000";
+		} catch {
+			llamaCppRunning = false;
+		}
 	}
 
 	describe.skipIf(!llamaCppRunning)("llama.cpp (local)", () => {

@@ -547,6 +547,10 @@ export class Markdown implements Component {
 			}
 		}
 
+		while (stylePrefix && result.endsWith(stylePrefix)) {
+			result = result.slice(0, -stylePrefix.length);
+		}
+
 		return result;
 	}
 

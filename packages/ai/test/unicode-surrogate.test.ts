@@ -22,6 +22,7 @@ const oauthTokens = await Promise.all([
 	resolveApiKey("openai-codex"),
 ]);
 const [anthropicOAuthToken, githubCopilotToken, geminiCliToken, antigravityToken, openaiCodexToken] = oauthTokens;
+const RUN_LIVE_PROVIDER_TESTS = process.env.PI_RUN_LIVE_PROVIDER_TESTS === "1";
 
 /**
  * Test for Unicode surrogate pair handling in tool results.
@@ -284,7 +285,7 @@ async function testUnpairedHighSurrogate<TApi extends Api>(llm: Model<TApi>, opt
 	expect(response.content.length).toBeGreaterThan(0);
 }
 
-describe("AI Providers Unicode Surrogate Pair Tests", () => {
+describe.skipIf(!RUN_LIVE_PROVIDER_TESTS)("AI Providers Unicode Surrogate Pair Tests", () => {
 	describe.skipIf(!process.env.GEMINI_API_KEY)("Google Provider Unicode Handling", () => {
 		const llm = getModel("google", "gemini-2.5-flash");
 

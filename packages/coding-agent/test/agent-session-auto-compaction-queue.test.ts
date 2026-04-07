@@ -48,9 +48,9 @@ vi.mock("../src/core/compaction/index.js", () => ({
 	prepareCompaction: () => ({ dummy: true }),
 	shouldCompact: (
 		contextTokens: number,
-		contextWindow: number,
+		model: { contextWindow?: number },
 		settings: { enabled: boolean; reserveTokens: number },
-	) => settings.enabled && contextTokens > contextWindow - settings.reserveTokens,
+	) => settings.enabled && contextTokens + settings.reserveTokens > (model.contextWindow ?? 0),
 }));
 
 describe("AgentSession auto-compaction queue resume", () => {
