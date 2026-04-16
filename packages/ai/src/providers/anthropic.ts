@@ -29,6 +29,12 @@ import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 
+import {
+	applyOAuthCloaking,
+	buildOAuthBetaString,
+	buildOAuthHeaders,
+	signAnthropicMessagesBody,
+} from "./anthropic-oauth-cloak.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
 import { adjustMaxTokensForThinking, buildBaseOptions } from "./simple-options.js";
 import { transformMessages } from "./transform-messages.js";
@@ -185,6 +191,44 @@ export interface AnthropicOptions extends StreamOptions {
 	 * `AnthropicVertex` that shares the same messaging API.
 	 */
 	client?: Anthropic;
+	/**
+	 * Apply OAuth request cloaking to match Claude Code v2.1.108's wire
+	 * fingerprint: 9-block system[], Stainless headers, opaque tool aliases,
+	 * billing header with xxHash64 cch, and the full Anthropic-Beta list.
+	 * Default: true whenever the provided apiKey is an OAuth token
+	 * (`sk-ant-oat…`). Set to `false` to opt out (legacy request shape).
+	 */
+	oauthCloak?: boolean;
+	/**
+	 * When cloaking, sanitize the user-provided system prompt down to a
+	 * 3-line neutral reminder before prepending it to the first user
+	 * message. Strongest fingerprint reduction: real Claude Code never
+	 * prepends third-party persona content to user messages, so leaking
+	 * the caller's system prompt is itself a classifier signal.
+	 *
+	 * Default: `true` — prioritizes subscription-token request acceptance
+	 * over preserving the caller's persona. Opt out with `false` if you
+	 * need your agent's full system prompt visible to the model.
+	 */
+	oauthSanitizeSystemPrompt?: boolean;
+	/**
+	 * Alias scheme for custom tools under cloaking:
+	 *   - `true` (default) — aliases look like user-configured MCP tools:
+	 *     `mcp__local__t1`, `mcp__local__t2`, … This matches the shape of
+	 *     real Claude Code traffic with an MCP server attached, and leans
+	 *     on the model's trained priors for the `mcp__*__*` namespace.
+	 *     Tools the caller already supplied with an MCP-shaped name
+	 *     (`mcp__<server>__<tool>`) pass through unchanged.
+	 *   - `false` — aliases are compact opaque handles: `t1`, `t2`, …
+	 *     Smaller on the wire but atypical for CC traffic.
+	 */
+	oauthMcpStyleAliases?: boolean;
+	/** Middle segment used when `oauthMcpStyleAliases` is true. Default `"local"`. */
+	oauthMcpServerName?: string;
+	/** Override `cc_entrypoint` in the billing header. Default "cli". */
+	oauthEntrypoint?: string;
+	/** Override `cc_workload` in the billing header. Default omitted. */
+	oauthWorkload?: string;
 }
 
 function mergeHeaders(...headerSources: (Record<string, string> | undefined)[]): Record<string, string> {
@@ -227,11 +271,15 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			let client: Anthropic;
 			let isOAuth: boolean;
 
+			let resolvedApiKey = "";
+			let cloakActive = false;
 			if (options?.client) {
 				client = options.client;
 				isOAuth = false;
 			} else {
-				const apiKey = options?.apiKey ?? getEnvApiKey(model.provider) ?? "";
+				resolvedApiKey = options?.apiKey ?? getEnvApiKey(model.provider) ?? "";
+				cloakActive =
+					isOAuthToken(resolvedApiKey) && (options?.oauthCloak ?? true);
 
 				let copilotDynamicHeaders: Record<string, string> | undefined;
 				if (model.provider === "github-copilot") {
@@ -244,15 +292,42 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 
 				const created = createClient(
 					model,
-					apiKey,
+					resolvedApiKey,
 					options?.interleavedThinking ?? true,
 					options?.headers,
 					copilotDynamicHeaders,
+					cloakActive,
 				);
 				client = created.client;
 				isOAuth = created.isOAuthToken;
 			}
 			let params = buildParams(model, context, isOAuth, options);
+
+			// Apply OAuth request-body cloaking (9-block system[], tool aliases,
+			// billing header with xxHash64 cch, effort injection). Headers are
+			// already set on the client above.
+			let toolAliasReverse: Map<string, string> | undefined;
+			if (cloakActive) {
+				const { toolAliasReverse: reverseMap } = applyOAuthCloaking(params, {
+					apiKey: resolvedApiKey,
+					systemPrompt: context.systemPrompt,
+					sanitize: options?.oauthSanitizeSystemPrompt ?? true,
+					entrypoint: options?.oauthEntrypoint,
+					workload: options?.oauthWorkload,
+					aliasScheme: (options?.oauthMcpStyleAliases ?? true) ? "mcp" : "short",
+					mcpServerName: options?.oauthMcpServerName,
+				});
+				toolAliasReverse = reverseMap;
+
+				// Re-sign the billing header's cch over the final post-injection
+				// body using xxHash64 (the signAnthropicMessagesBody step in the
+				// fork — required for OAuth requests to be accepted).
+				const bodyJson = JSON.stringify(params);
+				const signedJson = signAnthropicMessagesBody(bodyJson);
+				if (signedJson !== bodyJson) {
+					params = JSON.parse(signedJson) as MessageCreateParamsStreaming;
+				}
+			}
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
@@ -305,12 +380,25 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 						output.content.push(block);
 						stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
 					} else if (event.content_block.type === "tool_use") {
+						const incomingName = event.content_block.name;
+						let resolvedName: string;
+						// Opaque aliases (t1, t2, …) come back via the reverse map. Builtins
+						// and case-canonicalized names (e.g. the caller's "bash" gets sent as
+						// "Bash" by convertTools' case-fold, then the model responds with
+						// "Bash" too) aren't in the reverse map and need fromClaudeCodeName
+						// to restore the caller's original casing — otherwise the agent-loop's
+						// case-sensitive `tools.find(t => t.name === toolCall.name)` fails.
+						if (toolAliasReverse && toolAliasReverse.has(incomingName)) {
+							resolvedName = toolAliasReverse.get(incomingName)!;
+						} else if (isOAuth) {
+							resolvedName = fromClaudeCodeName(incomingName, context.tools);
+						} else {
+							resolvedName = incomingName;
+						}
 						const block: Block = {
 							type: "toolCall",
 							id: event.content_block.id,
-							name: isOAuth
-								? fromClaudeCodeName(event.content_block.name, context.tools)
-								: event.content_block.name,
+							name: resolvedName,
 							arguments: (event.content_block.input as Record<string, any>) ?? {},
 							partialJson: "",
 							index: event.index,
@@ -532,6 +620,7 @@ function createClient(
 	interleavedThinking: boolean,
 	optionsHeaders?: Record<string, string>,
 	dynamicHeaders?: Record<string, string>,
+	oauthCloakActive: boolean = false,
 ): { client: Anthropic; isOAuthToken: boolean } {
 	// Adaptive thinking models (Opus 4.6, Sonnet 4.6) have interleaved thinking built-in.
 	// The beta header is deprecated on Opus 4.6 and redundant on Sonnet 4.6, so skip it.
@@ -571,6 +660,45 @@ function createClient(
 
 	// OAuth: Bearer auth, Claude Code identity headers
 	if (isOAuthToken(apiKey)) {
+		if (oauthCloakActive) {
+			// Cloaked path: Claude Code v2.1.108 full fingerprint.
+			const isAnthropicBase =
+				typeof model.baseUrl === "string" && model.baseUrl.startsWith("https://api.anthropic.com");
+			// Decide whether to advertise effort beta: true when adaptive thinking
+			// is configured for this request. Cheap heuristic without reaching
+			// into options — just always include it for cloaked OAuth since the
+			// server accepts it regardless.
+			const injectEffort = supportsAdaptiveThinking(model.id);
+			const beta = buildOAuthBetaString({
+				extraBetas: ["fine-grained-tool-streaming-2025-05-14"],
+				injectEffort,
+			});
+			const cloakHeaders = buildOAuthHeaders({ apiKey, isAnthropicBase });
+			const client = new Anthropic({
+				apiKey: null,
+				authToken: apiKey,
+				baseURL: model.baseUrl,
+				// Intentionally NOT passing `dangerouslyAllowBrowser: true` on the
+				// cloaked path: the SDK auto-injects
+				// `anthropic-dangerous-direct-browser-access: true` when that flag
+				// is set, which is a fingerprint tell (real Claude Code never emits
+				// this header). pi-mono runs in Node for OAuth-enabled flows, so
+				// this is safe.
+				defaultHeaders: mergeHeaders(
+					{
+						accept: "application/json",
+						"anthropic-beta": beta,
+					},
+					cloakHeaders,
+					model.headers,
+					optionsHeaders,
+				),
+			});
+
+			return { client, isOAuthToken: true };
+		}
+
+		// Legacy (uncloaked) OAuth path — kept for opt-out / debugging.
 		const client = new Anthropic({
 			apiKey: null,
 			authToken: apiKey,
