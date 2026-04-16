@@ -192,6 +192,49 @@ describe("ModelRegistry", () => {
 	});
 
 	describe("custom models merge behavior", () => {
+		test("built-in provider custom models inherit api and baseUrl without explicit fields", () => {
+			// Built-in providers already have api/baseUrl on every model, and auth
+			// comes from env vars / auth storage. No need to specify them.
+			writeRawModelsJson({
+				openrouter: {
+					models: [
+						{
+							id: "fake-provider/fake-model",
+							name: "Fake model",
+							reasoning: true,
+							input: ["text"],
+						},
+					],
+				},
+			});
+
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			expect(registry.getError()).toBeUndefined();
+
+			const model = registry.find("openrouter", "fake-provider/fake-model");
+			expect(model).toBeDefined();
+			expect(model?.api).toBe("openai-completions");
+			expect(model?.baseUrl).toBe("https://openrouter.ai/api/v1");
+		});
+
+		test("non-built-in provider custom models still require baseUrl and apiKey", () => {
+			writeRawModelsJson({
+				"my-custom-provider": {
+					models: [
+						{
+							id: "my-model",
+							api: "openai-completions",
+							reasoning: false,
+							input: ["text"],
+						},
+					],
+				},
+			});
+
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			expect(registry.getError()).toContain("baseUrl");
+		});
+
 		test("custom provider with same name as built-in merges with built-in models", () => {
 			writeModelsJson({
 				anthropic: providerConfig("https://my-proxy.example.com/v1", [{ id: "claude-custom" }]),
@@ -1142,7 +1185,7 @@ describe("ModelRegistry", () => {
 
 	describe("context tiers", () => {
 		test("normalizes built-in models to include a default tier", () => {
-			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
 			const model = registry.find("anthropic", "claude-sonnet-4-5");
 
 			expect(model?.contextTiers).toHaveLength(1);
@@ -1181,7 +1224,7 @@ describe("ModelRegistry", () => {
 				},
 			});
 
-			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
 			const model = registry.find("custom-provider", "tiered-model");
 
 			expect(model?.contextWindow).toBe(100000);
@@ -1212,7 +1255,7 @@ describe("ModelRegistry", () => {
 				},
 			});
 
-			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
 			const model = registry.find("custom-provider", "compact-model");
 
 			expect(model?.compaction).toEqual({ includeThinking: false });

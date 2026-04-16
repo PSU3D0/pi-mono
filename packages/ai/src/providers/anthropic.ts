@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
+	CacheControlEphemeral,
 	ContentBlockParam,
 	MessageCreateParamsStreaming,
 	MessageParam,
@@ -49,7 +50,7 @@ function resolveCacheRetention(cacheRetention?: CacheRetention): CacheRetention 
 function getCacheControl(
 	baseUrl: string,
 	cacheRetention?: CacheRetention,
-): { retention: CacheRetention; cacheControl?: { type: "ephemeral"; ttl?: "1h" } } {
+): { retention: CacheRetention; cacheControl?: CacheControlEphemeral } {
 	const retention = resolveCacheRetention(cacheRetention);
 	if (retention === "none") {
 		return { retention };
@@ -384,7 +385,9 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 							});
 						} else if (block.type === "toolCall") {
 							block.arguments = parseStreamingJson(block.partialJson);
-							delete (block as any).partialJson;
+							// Finalize in-place and strip the scratch buffer so replay only
+							// carries parsed arguments.
+							delete (block as { partialJson?: string }).partialJson;
 							stream.push({
 								type: "toolcall_end",
 								contentIndex: index,
@@ -429,7 +432,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			for (const block of output.content) delete (block as any).index;
+			for (const block of output.content) {
+				delete (block as { index?: number }).index;
+				// partialJson is only a streaming scratch buffer; never persist it.
+				delete (block as { partialJson?: string }).partialJson;
+			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
@@ -651,7 +658,7 @@ function buildParams(
 	}
 
 	if (context.tools) {
-		params.tools = convertTools(context.tools, isOAuthToken);
+		params.tools = convertTools(context.tools, isOAuthToken, cacheControl);
 	}
 
 	// Configure thinking mode: adaptive (Opus 4.6 and Sonnet 4.6),
@@ -703,7 +710,7 @@ function convertMessages(
 	messages: Message[],
 	model: Model<"anthropic-messages">,
 	isOAuthToken: boolean,
-	cacheControl?: { type: "ephemeral"; ttl?: "1h" },
+	cacheControl?: CacheControlEphemeral,
 ): MessageParam[] {
 	const params: MessageParam[] = [];
 
@@ -864,20 +871,25 @@ function convertMessages(
 	return params;
 }
 
-function convertTools(tools: Tool[], isOAuthToken: boolean): Anthropic.Messages.Tool[] {
+function convertTools(
+	tools: Tool[],
+	isOAuthToken: boolean,
+	cacheControl?: CacheControlEphemeral,
+): Anthropic.Messages.Tool[] {
 	if (!tools) return [];
 
-	return tools.map((tool) => {
-		const jsonSchema = tool.parameters as any; // TypeBox already generates JSON Schema
+	return tools.map((tool, index) => {
+		const schema = tool.parameters as { properties?: unknown; required?: string[] };
 
 		return {
 			name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
 			description: tool.description,
 			input_schema: {
-				type: "object" as const,
-				properties: jsonSchema.properties || {},
-				required: jsonSchema.required || [],
+				type: "object",
+				properties: schema.properties ?? {},
+				required: schema.required ?? [],
 			},
+			...(cacheControl && index === tools.length - 1 ? { cache_control: cacheControl } : {}),
 		};
 	});
 }

@@ -593,7 +593,7 @@ describe("Markdown component", () => {
 			const component = new MarkdownWithInput(markdown);
 			tui.addChild(component);
 			tui.start();
-			await terminal.flush();
+			await terminal.waitForRender();
 
 			assert.ok(component.markdownLineCount > 0);
 			const inputRow = component.markdownLineCount;
@@ -1033,7 +1033,7 @@ bar`,
 			const tui = new TUI(terminal);
 			tui.addChild(markdown);
 			tui.start();
-			await terminal.flush();
+			await terminal.waitForRender();
 
 			const renderedLine = markdown.render(80)[0];
 			assert.ok(renderedLine, "Should render heading line");
@@ -1062,6 +1062,31 @@ bar`,
 		});
 	});
 
+	describe("Strikethrough syntax", () => {
+		it("should render ~~text~~ as strikethrough", () => {
+			const markdown = new Markdown("Use ~~strikethrough~~ here", 0, 0, defaultMarkdownTheme);
+
+			const lines = markdown.render(80);
+			const joinedOutput = lines.join("\n");
+			const joinedPlain = lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join(" ");
+
+			assert.ok(joinedOutput.includes("\x1b[9m"), "Should apply strikethrough styling");
+			assert.ok(joinedPlain.includes("strikethrough"), "Should include struck text content");
+			assert.ok(!joinedPlain.includes("~~strikethrough~~"), "Should not render delimiters as text");
+		});
+
+		it("should keep ~text~ as plain text", () => {
+			const markdown = new Markdown("Use ~strikethrough~ literally", 0, 0, defaultMarkdownTheme);
+
+			const lines = markdown.render(80);
+			const joinedOutput = lines.join("\n");
+			const joinedPlain = lines.map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")).join(" ");
+
+			assert.ok(joinedPlain.includes("~strikethrough~"), "Single-tilde delimiters should remain visible");
+			assert.ok(!joinedOutput.includes("\x1b[9m"), "Single-tilde text should not use strikethrough styling");
+		});
+	});
+
 	describe("Links", () => {
 		it("should wrap resolved markdown links in OSC 8 hyperlinks", () => {
 			const theme = {
@@ -1082,7 +1107,7 @@ bar`,
 			const href = "vscode://file/home/user/project/docs/example.md";
 			const theme = {
 				...defaultMarkdownTheme,
-				resolveHref: (raw: string, kind: "link" | "codespan") =>
+				resolveHref: (raw: string, kind: "link" | "codespan" | "text") =>
 					kind === "codespan" && raw === samplePath ? href : undefined,
 			};
 			const markdown = new Markdown(`\`${samplePath}\``, 0, 0, theme);
