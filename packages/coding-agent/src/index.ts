@@ -113,6 +113,7 @@ export type {
 	ToolCallEvent,
 	ToolCallEventResult,
 	ToolDefinition,
+	ToolExecutionMode,
 	ToolInfo,
 	ToolRenderResultOptions,
 	ToolResultEvent,
@@ -296,7 +297,14 @@ export { type MainOptions, main } from "./main.js";
 export {
 	InteractiveMode,
 	type InteractiveModeOptions,
+	type ModelInfo,
 	type PrintModeOptions,
+	RpcClient,
+	type RpcClientOptions,
+	type RpcCommand,
+	type RpcEventListener,
+	type RpcResponse,
+	type RpcSessionState,
 	runPrintMode,
 	runRpcMode,
 } from "./modes/index.js";

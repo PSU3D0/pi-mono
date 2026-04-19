@@ -1,9 +1,10 @@
 import assert from "node:assert";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import stripAnsi from "strip-ansi";
 import type { Terminal as XtermTerminalType } from "@xterm/headless";
 import { Chalk } from "chalk";
 import { Markdown } from "../src/components/markdown.js";
+import { resetCapabilitiesCache, setCapabilities } from "../src/terminal-image.js";
 import { type Component, TUI } from "../src/tui.js";
 import { defaultMarkdownTheme } from "./test-themes.js";
 import { VirtualTerminal } from "./virtual-terminal.js";
@@ -326,6 +327,9 @@ describe("Markdown component", () => {
 		});
 
 		it("should wrap long unbroken tokens inside table cells (not only at line start)", () => {
+			// Pin to no-hyperlinks so width checks work on plain text without OSC 8 sequences.
+			setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+
 			const url = "https://example.com/this/is/a/very/long/url/that/should/wrap";
 			const markdown = new Markdown(
 				`| Value |
@@ -338,6 +342,7 @@ describe("Markdown component", () => {
 
 			const width = 30;
 			const lines = markdown.render(width);
+			resetCapabilitiesCache();
 			const plainLines = lines.map((line) => stripAnsi(line).trimEnd());
 
 			for (const line of plainLines) {
@@ -1088,7 +1093,12 @@ bar`,
 	});
 
 	describe("Links", () => {
+		afterEach(() => {
+			resetCapabilitiesCache();
+		});
+
 		it("should wrap resolved markdown links in OSC 8 hyperlinks", () => {
+			setCapabilities({ images: null, trueColor: false, hyperlinks: true });
 			const theme = {
 				...defaultMarkdownTheme,
 				resolveHref: (raw: string) => (raw === "https://example.com" ? raw : undefined),
@@ -1097,12 +1107,13 @@ bar`,
 			const lines = markdown.render(80);
 			const joined = lines.join("\n");
 
-			assert.ok(joined.includes("\x1b]8;;https://example.com\x07"), "should include OSC 8 opener");
-			assert.ok(joined.includes("\x1b]8;;\x07"), "should include OSC 8 closer");
-			assert.ok(stripAnsi(joined).includes("click here (https://example.com)"));
+			assert.ok(joined.includes("\x1b]8;;https://example.com\x1b\\"), "should include OSC 8 opener");
+			assert.ok(joined.includes("\x1b]8;;\x1b\\"), "should include OSC 8 closer");
+			assert.ok(stripAnsi(joined).includes("click here"));
 		});
 
 		it("should wrap inline-code file references in OSC 8 hyperlinks when resolved", () => {
+			setCapabilities({ images: null, trueColor: false, hyperlinks: true });
 			const samplePath = "docs/example.md";
 			const href = "vscode://file/home/user/project/docs/example.md";
 			const theme = {
@@ -1114,12 +1125,14 @@ bar`,
 			const lines = markdown.render(80);
 			const joined = lines.join("\n");
 
-			assert.ok(joined.includes(`\x1b]8;;${href}\x07`), "should include OSC 8 opener for inline code path");
-			assert.ok(joined.includes("\x1b]8;;\x07"), "should include OSC 8 closer for inline code path");
+			assert.ok(joined.includes(`\x1b]8;;${href}\x1b\\`), "should include OSC 8 opener for inline code path");
+			assert.ok(joined.includes("\x1b]8;;\x1b\\"), "should include OSC 8 closer for inline code path");
 			assert.ok(stripAnsi(joined).includes(samplePath));
 		});
 
 		it("should not duplicate URL for autolinked emails", () => {
+			// Hyperlinks capability does not affect the mailto: display check.
+			setCapabilities({ images: null, trueColor: false, hyperlinks: false });
 			const markdown = new Markdown("Contact user@example.com for help", 0, 0, defaultMarkdownTheme);
 
 			const lines = markdown.render(80);
@@ -1132,6 +1145,7 @@ bar`,
 		});
 
 		it("should not duplicate URL for bare URLs", () => {
+			setCapabilities({ images: null, trueColor: false, hyperlinks: false });
 			const markdown = new Markdown("Visit https://example.com for more", 0, 0, defaultMarkdownTheme);
 
 			const lines = markdown.render(80);
@@ -1143,28 +1157,78 @@ bar`,
 			assert.strictEqual(urlCount, 1, "URL should appear exactly once");
 		});
 
-		it("should show URL for explicit markdown links with different text", () => {
+		it("should show URL in parentheses when hyperlinks are not supported", () => {
+			setCapabilities({ images: null, trueColor: false, hyperlinks: false });
 			const markdown = new Markdown("[click here](https://example.com)", 0, 0, defaultMarkdownTheme);
 
 			const lines = markdown.render(80);
 			const plainLines = lines.map((line) => stripAnsi(line));
 			const joinedPlain = plainLines.join(" ");
 
-			// Should show both link text and URL
 			assert.ok(joinedPlain.includes("click here"), "Should contain link text");
 			assert.ok(joinedPlain.includes("(https://example.com)"), "Should show URL in parentheses");
 		});
 
-		it("should show URL for explicit mailto links with different text", () => {
+		it("should show mailto URL in parentheses when hyperlinks are not supported", () => {
+			setCapabilities({ images: null, trueColor: false, hyperlinks: false });
 			const markdown = new Markdown("[Email me](mailto:test@example.com)", 0, 0, defaultMarkdownTheme);
 
 			const lines = markdown.render(80);
 			const plainLines = lines.map((line) => stripAnsi(line));
 			const joinedPlain = plainLines.join(" ");
 
-			// Should show both link text and mailto URL
 			assert.ok(joinedPlain.includes("Email me"), "Should contain link text");
 			assert.ok(joinedPlain.includes("(mailto:test@example.com)"), "Should show mailto URL in parentheses");
+		});
+
+		it("should emit OSC 8 hyperlink sequence when terminal supports hyperlinks", () => {
+			setCapabilities({ images: null, trueColor: false, hyperlinks: true });
+			const markdown = new Markdown("[click here](https://example.com)", 0, 0, defaultMarkdownTheme);
+
+			const lines = markdown.render(80);
+			const joined = lines.join("");
+
+			// OSC 8 open: ESC ] 8 ; ; <url> ESC \
+			assert.ok(joined.includes("\x1b]8;;https://example.com\x1b\\"), "Should contain OSC 8 open sequence");
+			// OSC 8 close: ESC ] 8 ; ; ESC \
+			assert.ok(joined.includes("\x1b]8;;\x1b\\"), "Should contain OSC 8 close sequence");
+			// Visible text is present
+			const plainLines = lines.map((line) => line.replace(/\x1b[^a-zA-Z]*[a-zA-Z]|\x1b\].*?\x1b\\/g, ""));
+			assert.ok(plainLines.join("").includes("click here"), "Should contain link text");
+			// URL is NOT printed inline as plain text
+			const rawPlain = lines.map((line) =>
+				line.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;]*m/g, ""),
+			);
+			assert.ok(!rawPlain.join("").includes("(https://example.com)"), "URL should not appear inline in parentheses");
+		});
+
+		it("should use OSC 8 for mailto links when terminal supports hyperlinks", () => {
+			setCapabilities({ images: null, trueColor: false, hyperlinks: true });
+			const markdown = new Markdown("[Email me](mailto:test@example.com)", 0, 0, defaultMarkdownTheme);
+
+			const lines = markdown.render(80);
+			const joined = lines.join("");
+
+			assert.ok(
+				joined.includes("\x1b]8;;mailto:test@example.com\x1b\\"),
+				"Should contain OSC 8 open with mailto URL",
+			);
+			assert.ok(joined.includes("\x1b]8;;\x1b\\"), "Should contain OSC 8 close sequence");
+		});
+
+		it("should use OSC 8 for bare URLs when terminal supports hyperlinks", () => {
+			setCapabilities({ images: null, trueColor: false, hyperlinks: true });
+			const markdown = new Markdown("Visit https://example.com for more", 0, 0, defaultMarkdownTheme);
+
+			const lines = markdown.render(80);
+			const joined = lines.join("");
+
+			assert.ok(joined.includes("\x1b]8;;https://example.com\x1b\\"), "Should contain OSC 8 hyperlink");
+			// URL should not also appear as raw parenthetical text
+			const rawPlain = lines.map((line) =>
+				line.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;]*m/g, ""),
+			);
+			assert.ok(!rawPlain.join("").includes("(https://example.com)"), "URL should not appear twice");
 		});
 	});
 

@@ -23,6 +23,7 @@ import type {
 import { AntigravityAccountPool } from "../utils/antigravity-account-pool/account-pool.js";
 import type { HeaderStyle, ModelFamily } from "../utils/antigravity-account-pool/types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
+import { headersToRecord } from "../utils/headers.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 import {
 	convertMessages,
@@ -475,6 +476,10 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 							body: requestBodyJson,
 							signal: options?.signal,
 						});
+						await options?.onResponse?.(
+							{ status: response.status, headers: headersToRecord(response.headers) },
+							model,
+						);
 
 						if (response.ok) {
 							if (pool && poolAccountIndex !== undefined) {
@@ -855,6 +860,10 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli", GoogleGe
 						body: requestBodyJson,
 						signal: options?.signal,
 					});
+					await options?.onResponse?.(
+						{ status: currentResponse.status, headers: headersToRecord(currentResponse.headers) },
+						model,
+					);
 
 					if (!currentResponse.ok) {
 						const retryErrorText = await currentResponse.text();

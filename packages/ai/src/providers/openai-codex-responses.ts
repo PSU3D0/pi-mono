@@ -33,6 +33,7 @@ import type {
 	Usage,
 } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
+import { headersToRecord } from "../utils/headers.js";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
 import { buildBaseOptions, clampReasoning } from "./simple-options.js";
 
@@ -216,6 +217,10 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 						body: bodyJson,
 						signal: options?.signal,
 					});
+					await options?.onResponse?.(
+						{ status: response.status, headers: headersToRecord(response.headers) },
+						model,
+					);
 
 					if (response.ok) {
 						break;
@@ -382,6 +387,16 @@ function applyServiceTierPricing(usage: Usage, serviceTier: ResponseCreateParams
 	usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
 }
 
+function resolveCodexServiceTier(
+	responseServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
+	requestServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
+): ResponseCreateParamsStreaming["service_tier"] | undefined {
+	if (responseServiceTier === "default" && (requestServiceTier === "flex" || requestServiceTier === "priority")) {
+		return requestServiceTier;
+	}
+	return responseServiceTier ?? requestServiceTier;
+}
+
 function resolveCodexUrl(baseUrl?: string): string {
 	const raw = baseUrl && baseUrl.trim().length > 0 ? baseUrl : DEFAULT_CODEX_BASE_URL;
 	const normalized = raw.replace(/\/+$/, "");
@@ -410,6 +425,7 @@ async function processStream(
 ): Promise<void> {
 	await processResponsesStream(mapCodexEvents(parseSSE(response)), output, stream, model, {
 		serviceTier: options?.serviceTier,
+		resolveServiceTier: resolveCodexServiceTier,
 		applyServiceTierPricing,
 	});
 }
@@ -537,14 +553,6 @@ function getWebSocketConstructor(): WebSocketConstructor | null {
 	const ctor = (globalThis as { WebSocket?: unknown }).WebSocket;
 	if (typeof ctor !== "function") return null;
 	return ctor as unknown as WebSocketConstructor;
-}
-
-function headersToRecord(headers: Headers): Record<string, string> {
-	const out: Record<string, string> = {};
-	for (const [key, value] of headers.entries()) {
-		out[key] = value;
-	}
-	return out;
 }
 
 function getWebSocketReadyState(socket: WebSocketLike): number | undefined {
@@ -973,6 +981,7 @@ async function processWebSocketStream(
 
 		await processResponsesStream(wrappedStream, output, stream, model, {
 			serviceTier: options?.serviceTier,
+			resolveServiceTier: resolveCodexServiceTier,
 			applyServiceTierPricing,
 		});
 

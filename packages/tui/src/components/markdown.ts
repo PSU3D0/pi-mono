@@ -1,5 +1,5 @@
 import { Marked, type Token, Tokenizer, type Tokens } from "marked";
-import { isImageLine } from "../terminal-image.js";
+import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.js";
 import type { Component } from "../tui.js";
 import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
 
@@ -448,7 +448,8 @@ export class Markdown implements Component {
 
 	private wrapHyperlink(text: string, href: string | undefined): string {
 		if (!href) return text;
-		return `\x1b]8;;${href}\x07${text}\x1b]8;;\x07`;
+		if (!getCapabilities().hyperlinks) return text;
+		return hyperlink(text, href);
 	}
 
 	/**
@@ -534,14 +535,24 @@ export class Markdown implements Component {
 
 				case "link": {
 					const linkText = this.renderInlineTokens(token.tokens || [], resolvedStyleContext);
-					const hrefForComparison = token.href.startsWith("mailto:") ? token.href.slice(7) : token.href;
+					// resolveHref gets first shot at the href (e.g. turning file paths into file://).
 					const resolvedHref = this.theme.resolveHref?.(token.href, "link") ?? token.href;
-					if (token.text === token.href || token.text === hrefForComparison) {
-						result += this.wrapHyperlink(this.theme.link(linkText), resolvedHref) + stylePrefix;
+					const styledLink = this.theme.link(this.theme.underline(linkText));
+					if (getCapabilities().hyperlinks) {
+						// OSC 8: render as a clickable hyperlink. The URL is not printed inline,
+						// so we always show only the link text regardless of whether it matches href.
+						result += hyperlink(styledLink, resolvedHref) + stylePrefix;
 					} else {
-						result +=
-							this.wrapHyperlink(this.theme.link(linkText) + this.theme.linkUrl(` (${token.href})`), resolvedHref) +
-							stylePrefix;
+						// Fallback: print URL in parentheses when text differs from href.
+						// Compare raw token.text (not styled) against href for the equality check.
+						// For mailto: links strip the prefix (autolinked emails use text="foo@bar.com"
+						// but href="mailto:foo@bar.com").
+						const hrefForComparison = token.href.startsWith("mailto:") ? token.href.slice(7) : token.href;
+						if (token.text === token.href || token.text === hrefForComparison) {
+							result += styledLink + stylePrefix;
+						} else {
+							result += styledLink + this.theme.linkUrl(` (${token.href})`) + stylePrefix;
+						}
 					}
 					break;
 				}
