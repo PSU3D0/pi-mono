@@ -7,7 +7,6 @@ import {
 	matchesKey,
 	Spacer,
 	Text,
-	TruncatedText,
 	truncateToWidth,
 } from "@mariozechner/pi-tui";
 import type { SessionTreeNode } from "../../../core/session-manager.js";
@@ -36,8 +35,26 @@ interface FlatNode {
 	isVirtualRootChild: boolean;
 }
 
-/** Filter mode for tree display */
+/** Content filter mode for tree display */
 export type FilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
+
+/** Time filter mode for tree display */
+export type TimeFilterMode = "all" | "1w" | "2w" | "3w" | "1mo";
+
+function getTimeFilterCutoffMs(mode: TimeFilterMode): number | null {
+	switch (mode) {
+		case "1w":
+			return Date.now() - 7 * 24 * 60 * 60 * 1000;
+		case "2w":
+			return Date.now() - 14 * 24 * 60 * 60 * 1000;
+		case "3w":
+			return Date.now() - 21 * 24 * 60 * 60 * 1000;
+		case "1mo":
+			return Date.now() - 30 * 24 * 60 * 60 * 1000;
+		default:
+			return null;
+	}
+}
 
 /**
  * Tree list component with selection and ASCII art visualization
@@ -55,6 +72,8 @@ class TreeList implements Component {
 	private currentLeafId: string | null;
 	private maxVisibleLines: number;
 	private filterMode: FilterMode = "default";
+	private timeFilterMode: TimeFilterMode = "all";
+	private sessionName?: string;
 	private searchQuery = "";
 	private toolCallMap: Map<string, ToolCallInfo> = new Map();
 	private multipleRoots = false;
@@ -75,10 +94,18 @@ class TreeList implements Component {
 		maxVisibleLines: number,
 		initialSelectedId?: string,
 		initialFilterMode?: FilterMode,
+		initialTimeFilterMode?: TimeFilterMode,
+		sessionName?: string,
 	) {
 		this.currentLeafId = currentLeafId;
 		this.maxVisibleLines = maxVisibleLines;
 		this.filterMode = initialFilterMode ?? "default";
+		this.timeFilterMode = initialTimeFilterMode ?? "all";
+		this.sessionName =
+			sessionName
+				?.replace(/[\x00-\x1f\x7f]/g, " ")
+				.replace(/ +/g, " ")
+				.trim() || undefined;
 		this.multipleRoots = tree.length > 1;
 		this.flatNodes = this.flattenTree(tree);
 		this.buildActivePath();
@@ -279,6 +306,7 @@ class TreeList implements Component {
 		}
 
 		const searchTokens = this.searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
+		const timeCutoffMs = getTimeFilterCutoffMs(this.timeFilterMode);
 
 		this.filteredNodes = this.flatNodes.filter((flatNode) => {
 			const entry = flatNode.node.entry;
@@ -296,7 +324,7 @@ class TreeList implements Component {
 				}
 			}
 
-			// Apply filter mode
+			// Apply content filter mode
 			let passesFilter = true;
 			// Entry types hidden in default view (settings/bookkeeping)
 			const isSettingsEntry =
@@ -308,28 +336,31 @@ class TreeList implements Component {
 
 			switch (this.filterMode) {
 				case "user-only":
-					// Just user messages
 					passesFilter = entry.type === "message" && entry.message.role === "user";
 					break;
 				case "no-tools":
-					// Default minus tool results
 					passesFilter = !isSettingsEntry && !(entry.type === "message" && entry.message.role === "toolResult");
 					break;
 				case "labeled-only":
-					// Just labeled entries
 					passesFilter = flatNode.node.label !== undefined;
 					break;
 				case "all":
-					// Show everything
 					passesFilter = true;
 					break;
 				default:
-					// Default mode: hide settings/bookkeeping entries
 					passesFilter = !isSettingsEntry;
 					break;
 			}
 
 			if (!passesFilter) return false;
+
+			// Apply time filter after content filtering.
+			if (timeCutoffMs !== null && !isCurrentLeaf) {
+				const timestampMs = new Date(entry.timestamp).getTime();
+				if (!Number.isFinite(timestampMs) || timestampMs < timeCutoffMs) {
+					return false;
+				}
+			}
 
 			// Apply search filter
 			if (searchTokens.length > 0) {
@@ -500,14 +531,31 @@ class TreeList implements Component {
 		this.visibleChildrenMap = visibleChildren;
 	}
 
+	private getSmartTitleData(node: SessionTreeNode): { title?: string; description?: string } | undefined {
+		const entry = node.entry;
+		if (entry.type !== "custom" || entry.customType !== "smart-title") return undefined;
+		const data = entry.data as { title?: unknown; description?: unknown } | undefined;
+		if (!data || typeof data !== "object") return undefined;
+		return {
+			title: typeof data.title === "string" ? data.title : undefined,
+			description: typeof data.description === "string" ? data.description : undefined,
+		};
+	}
+
 	/** Get searchable text content from a node */
 	private getSearchableText(node: SessionTreeNode): string {
 		const entry = node.entry;
 		const parts: string[] = [];
 
+		if (this.sessionName) {
+			parts.push(this.sessionName);
+		}
 		if (node.label) {
 			parts.push(node.label);
 		}
+		const smartTitle = this.getSmartTitleData(node);
+		if (smartTitle?.title) parts.push(smartTitle.title);
+		if (smartTitle?.description) parts.push(smartTitle.description);
 
 		switch (entry.type) {
 			case "message": {
@@ -549,6 +597,8 @@ class TreeList implements Component {
 				break;
 			case "custom":
 				parts.push("custom", entry.customType);
+				if (smartTitle?.title) parts.push(smartTitle.title);
+				if (smartTitle?.description) parts.push(smartTitle.description);
 				break;
 			case "label":
 				parts.push("label", entry.label ?? "");
@@ -562,6 +612,10 @@ class TreeList implements Component {
 
 	getSearchQuery(): string {
 		return this.searchQuery;
+	}
+
+	getSessionName(): string | undefined {
+		return this.sessionName;
 	}
 
 	getSelectedNode(): SessionTreeNode | undefined {
@@ -594,6 +648,9 @@ class TreeList implements Component {
 				labels += " [all]";
 				break;
 		}
+		if (this.timeFilterMode !== "all") {
+			labels += ` [${this.timeFilterMode}]`;
+		}
 		if (this.showLabelTimestamps) {
 			labels += " [+label time]";
 		}
@@ -604,7 +661,20 @@ class TreeList implements Component {
 		const lines: string[] = [];
 
 		if (this.filteredNodes.length === 0) {
-			lines.push(truncateToWidth(theme.fg("muted", "  No entries found"), width));
+			if (this.searchQuery) {
+				lines.push(truncateToWidth(theme.fg("muted", "  No entries match search"), width));
+				lines.push(truncateToWidth(theme.fg("muted", "  Press Esc to clear search"), width));
+			} else if (this.flatNodes.length > 0 && this.filterMode !== "all" && this.timeFilterMode === "all") {
+				lines.push(truncateToWidth(theme.fg("muted", "  No visible entries for current filter"), width));
+				lines.push(truncateToWidth(theme.fg("muted", "  Press Ctrl+A or Ctrl+O to show all"), width));
+			} else if (this.flatNodes.length > 0 && this.timeFilterMode !== "all") {
+				lines.push(truncateToWidth(theme.fg("muted", "  No visible entries for current filters"), width));
+				lines.push(
+					truncateToWidth(theme.fg("muted", "  Press Ctrl+W to widen time filter or Ctrl+D to reset"), width),
+				);
+			} else {
+				lines.push(truncateToWidth(theme.fg("muted", "  No entries found"), width));
+			}
 			lines.push(truncateToWidth(theme.fg("muted", `  (0/0)${this.getStatusLabels()}`), width));
 			return lines;
 		}
@@ -767,9 +837,15 @@ class TreeList implements Component {
 			case "thinking_level_change":
 				result = theme.fg("dim", `[thinking: ${entry.thinkingLevel}]`);
 				break;
-			case "custom":
-				result = theme.fg("dim", `[custom: ${entry.customType}]`);
+			case "custom": {
+				const smartTitle = this.getSmartTitleData(node);
+				if (entry.customType === "smart-title" && smartTitle?.title) {
+					result = theme.fg("dim", `[smart-title: ${normalize(smartTitle.title)}]`);
+				} else {
+					result = theme.fg("dim", `[custom: ${entry.customType}]`);
+				}
 				break;
+			}
 			case "label":
 				result = theme.fg("dim", `[label: ${entry.label ?? "(cleared)"}]`);
 				break;
@@ -977,6 +1053,20 @@ class TreeList implements Component {
 			this.filterMode = modes[(currentIndex + 1) % modes.length];
 			this.foldedNodes.clear();
 			this.applyFilter();
+		} else if (matchesKey(keyData, "shift+ctrl+w")) {
+			// Cycle time filter backwards
+			const modes: TimeFilterMode[] = ["all", "1w", "2w", "3w", "1mo"];
+			const currentIndex = modes.indexOf(this.timeFilterMode);
+			this.timeFilterMode = modes[(currentIndex - 1 + modes.length) % modes.length];
+			this.foldedNodes.clear();
+			this.applyFilter();
+		} else if (matchesKey(keyData, "ctrl+w")) {
+			// Cycle time filter forwards: all → 1w → 2w → 3w → 1mo → all
+			const modes: TimeFilterMode[] = ["all", "1w", "2w", "3w", "1mo"];
+			const currentIndex = modes.indexOf(this.timeFilterMode);
+			this.timeFilterMode = modes[(currentIndex + 1) % modes.length];
+			this.foldedNodes.clear();
+			this.applyFilter();
 		} else if (kb.matches(keyData, "tui.editor.deleteCharBackward")) {
 			if (this.searchQuery.length > 0) {
 				this.searchQuery = this.searchQuery.slice(0, -1);
@@ -1159,13 +1249,23 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		onLabelChange?: (entryId: string, label: string | undefined) => void,
 		initialSelectedId?: string,
 		initialFilterMode?: FilterMode,
+		initialTimeFilterMode?: TimeFilterMode,
+		sessionName?: string,
 	) {
 		super();
 
 		this.onLabelChangeCallback = onLabelChange;
 		const maxVisibleLines = Math.max(5, Math.floor(terminalHeight / 2));
 
-		this.treeList = new TreeList(tree, currentLeafId, maxVisibleLines, initialSelectedId, initialFilterMode);
+		this.treeList = new TreeList(
+			tree,
+			currentLeafId,
+			maxVisibleLines,
+			initialSelectedId,
+			initialFilterMode,
+			initialTimeFilterMode,
+			sessionName,
+		);
 		this.treeList.onSelect = onSelect;
 		this.treeList.onCancel = onCancel;
 		this.treeList.onLabelEdit = (entryId, currentLabel) => this.showLabelInput(entryId, currentLabel);
@@ -1178,11 +1278,14 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 		this.addChild(new Text(theme.bold("  Session Tree"), 1, 0));
+		if (this.treeList.getSessionName()) {
+			this.addChild(new Text(theme.fg("muted", `  ${this.treeList.getSessionName()}`), 0, 0));
+		}
 		this.addChild(
-			new TruncatedText(
+			new Text(
 				theme.fg(
 					"muted",
-					`  ↑/↓: move. ←/→: page. ^←/^→ or Alt+←/Alt+→: fold/branch. ${keyText("app.tree.editLabel")}: label. ^D/^T/^U/^L/^A: filters (^O/⇧^O cycle). ${keyText("app.tree.toggleLabelTimestamp")}: label time`,
+					`  ↑/↓: move. ←/→: page. ^←/^→ or Alt+←/Alt+→: fold/branch. ${keyText("app.tree.editLabel")}: label. ^D/^T/^U/^L/^A: filters (^O/⇧^O cycle). ^W/⇧^W: time. ${keyText("app.tree.toggleLabelTimestamp")}: label time`,
 				),
 				0,
 				0,

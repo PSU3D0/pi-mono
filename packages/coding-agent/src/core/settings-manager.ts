@@ -94,7 +94,8 @@ export interface Settings {
 	images?: ImageSettings;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
 	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
-	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default filter when opening /tree
+	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default content filter when opening /tree
+	treeTimeFilterMode?: "all" | "1w" | "2w" | "3w" | "1mo"; // Default time filter when opening /tree
 	thinkingBudgets?: ThinkingBudgetsSettings; // Custom token budgets for thinking levels
 	editorPaddingX?: number; // Horizontal padding for input editor (default: 0)
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
@@ -949,6 +950,18 @@ export class SettingsManager {
 	setTreeFilterMode(mode: "default" | "no-tools" | "user-only" | "labeled-only" | "all"): void {
 		this.globalSettings.treeFilterMode = mode;
 		this.markModified("treeFilterMode");
+		this.save();
+	}
+
+	getTreeTimeFilterMode(): "all" | "1w" | "2w" | "3w" | "1mo" {
+		const mode = this.settings.treeTimeFilterMode;
+		const valid = ["all", "1w", "2w", "3w", "1mo"];
+		return mode && valid.includes(mode) ? mode : "all";
+	}
+
+	setTreeTimeFilterMode(mode: "all" | "1w" | "2w" | "3w" | "1mo"): void {
+		this.globalSettings.treeTimeFilterMode = mode;
+		this.markModified("treeTimeFilterMode");
 		this.save();
 	}
 

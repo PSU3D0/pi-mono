@@ -41,7 +41,8 @@ import { buildBaseOptions, clampReasoning } from "./simple-options.js";
 // Configuration
 // ============================================================================
 
-const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
+const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
+const DEFAULT_CODEX_CLIENT_VERSION = process.env.PI_AI_CODEX_VERSION || process.env.npm_package_version || "0.67.68";
 const JWT_CLAIM_PATH = "https://api.openai.com/auth" as const;
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
@@ -358,7 +359,10 @@ function buildRequestBody(
 
 function clampReasoningEffort(modelId: string, effort: string): string {
 	const id = modelId.includes("/") ? modelId.split("/").pop()! : modelId;
-	if ((id.startsWith("gpt-5.2") || id.startsWith("gpt-5.3") || id.startsWith("gpt-5.4")) && effort === "minimal")
+	if (
+		(id.startsWith("gpt-5.2") || id.startsWith("gpt-5.3") || id.startsWith("gpt-5.4") || id.startsWith("gpt-5.5")) &&
+		effort === "minimal"
+	)
 		return "low";
 	if (id === "gpt-5.1" && effort === "xhigh") return "high";
 	if (id === "gpt-5.1-codex-mini") return effort === "high" || effort === "xhigh" ? "high" : "medium";
@@ -1101,10 +1105,10 @@ function buildBaseCodexHeaders(
 	headers.set("originator", "codex_cli_rs");
 	// User-Agent must match the originator format: {originator}/{version} ({os} {os_version}; {arch})
 	const userAgent = _os
-		? `codex_cli_rs/0.0.1 (${_os.platform()} ${_os.release()}; ${_os.arch()})`
-		: "codex_cli_rs/0.0.1";
+		? `codex_cli_rs/${DEFAULT_CODEX_CLIENT_VERSION} (${_os.platform()} ${_os.release()}; ${_os.arch()})`
+		: `codex_cli_rs/${DEFAULT_CODEX_CLIENT_VERSION}`;
 	headers.set("User-Agent", userAgent);
-	headers.set("version", "0.0.1");
+	headers.set("version", DEFAULT_CODEX_CLIENT_VERSION);
 	return headers;
 }
 

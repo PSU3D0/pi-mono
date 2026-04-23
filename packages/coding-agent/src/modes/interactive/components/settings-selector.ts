@@ -53,6 +53,7 @@ export interface SettingsConfig {
 	enableInstallTelemetry: boolean;
 	doubleEscapeAction: "fork" | "tree" | "none";
 	treeFilterMode: "default" | "no-tools" | "user-only" | "labeled-only" | "all";
+	treeTimeFilterMode: "all" | "1w" | "2w" | "3w" | "1mo";
 	showHardwareCursor: boolean;
 	editorPaddingX: number;
 	autocompleteMaxVisible: number;
@@ -78,6 +79,7 @@ export interface SettingsCallbacks {
 	onEnableInstallTelemetryChange: (enabled: boolean) => void;
 	onDoubleEscapeActionChange: (action: "fork" | "tree" | "none") => void;
 	onTreeFilterModeChange: (mode: "default" | "no-tools" | "user-only" | "labeled-only" | "all") => void;
+	onTreeTimeFilterModeChange: (mode: "all" | "1w" | "2w" | "3w" | "1mo") => void;
 	onShowHardwareCursorChange: (enabled: boolean) => void;
 	onEditorPaddingXChange: (padding: number) => void;
 	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
@@ -255,9 +257,16 @@ export class SettingsSelectorComponent extends Container {
 			{
 				id: "tree-filter-mode",
 				label: "Tree filter mode",
-				description: "Default filter when opening /tree",
+				description: "Default content filter when opening /tree",
 				currentValue: config.treeFilterMode,
 				values: ["default", "no-tools", "user-only", "labeled-only", "all"],
+			},
+			{
+				id: "tree-time-filter-mode",
+				label: "Tree time filter",
+				description: "Default time window when opening /tree",
+				currentValue: config.treeTimeFilterMode,
+				values: ["all", "1w", "2w", "3w", "1mo"],
 			},
 			{
 				id: "thinking",
@@ -445,6 +454,9 @@ export class SettingsSelectorComponent extends Container {
 						callbacks.onTreeFilterModeChange(
 							newValue as "default" | "no-tools" | "user-only" | "labeled-only" | "all",
 						);
+						break;
+					case "tree-time-filter-mode":
+						callbacks.onTreeTimeFilterModeChange(newValue as "all" | "1w" | "2w" | "3w" | "1mo");
 						break;
 					case "show-hardware-cursor":
 						callbacks.onShowHardwareCursorChange(newValue === "true");

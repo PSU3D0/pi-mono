@@ -26,14 +26,17 @@ describe("supportsXhigh", () => {
 		expect(supportsXhigh(model!)).toBe(true);
 	});
 
-	it("returns true for OpenRouter Opus 4.6 (openai-completions API)", () => {
-		const model = getModel("openrouter", "anthropic/claude-opus-4.6");
-		expect(model).toBeDefined();
-		expect(supportsXhigh(model!)).toBe(true);
+	it("returns true for GPT-5.5 models", () => {
+		const openAIModel = getModel("openai", "gpt-5.5");
+		const codexModel = getModel("openai-codex", "gpt-5.5");
+		expect(openAIModel).toBeDefined();
+		expect(codexModel).toBeDefined();
+		expect(supportsXhigh(openAIModel!)).toBe(true);
+		expect(supportsXhigh(codexModel!)).toBe(true);
 	});
 
-	it("returns true for GPT-5.4 models", () => {
-		const model = getModel("openai-codex", "gpt-5.4");
+	it("returns true for OpenRouter Opus 4.6 (openai-completions API)", () => {
+		const model = getModel("openrouter", "anthropic/claude-opus-4.6");
 		expect(model).toBeDefined();
 		expect(supportsXhigh(model!)).toBe(true);
 	});

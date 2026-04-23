@@ -968,6 +968,26 @@ async function generateModels() {
 		});
 	}
 
+	if (!allModels.some((m) => m.provider === "openai" && m.id === "gpt-5.5")) {
+		allModels.push({
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.com/v1",
+			provider: "openai",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 2.5,
+				output: 15,
+				cacheRead: 0.25,
+				cacheWrite: 0,
+			},
+			contextWindow: 272000,
+			maxTokens: 128000,
+		});
+	}
+
 	const minimaxDirectSupportedIds = new Set(["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]);
 
 	for (const candidate of allModels) {
@@ -993,7 +1013,7 @@ async function generateModels() {
 	// OpenAI Codex (ChatGPT OAuth) models
 	// NOTE: These are not fetched from models.dev; we keep a small, explicit list to avoid aliases.
 	// Context window is based on observed server limits (400s above ~272k), not marketing numbers.
-	const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
+	const CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 	const CODEX_CONTEXT = 272000;
 	const CODEX_MAX_TOKENS = 128000;
 	const codexModels: Model<"openai-codex-responses">[] = [
@@ -1146,6 +1166,35 @@ async function generateModels() {
 					contextWindow: 1_050_000,
 					costMultiplier: 2,
 					description: "Allows up to 1M context. Usage and pricing double past the standard tier.",
+				},
+			],
+			compaction: { includeThinking: false },
+			maxTokens: CODEX_MAX_TOKENS,
+		},
+		{
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: CODEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+			contextWindow: CODEX_CONTEXT,
+			contextTiers: [
+				{
+					id: "standard",
+					name: "Standard",
+					contextWindow: CODEX_CONTEXT,
+					description: "Standard Codex pricing up to 272k context.",
+					default: true,
+				},
+				{
+					id: "extended",
+					name: "Extended 1M",
+					contextWindow: 1_050_000,
+					cost: { input: 5, output: 22.5, cacheRead: 0.5, cacheWrite: 0 },
+					description: "Allows up to 1M context with higher input/output pricing past the standard tier.",
 				},
 			],
 			compaction: { includeThinking: false },

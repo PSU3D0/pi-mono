@@ -440,6 +440,25 @@ describe("createBranchedSession", () => {
 		expect(entries[1].id).toBe(id2);
 	});
 
+	it("returns branch-local session names for current and explicit leaves", () => {
+		const session = SessionManager.inMemory();
+
+		const root = session.appendMessage(userMsg("root"));
+		session.appendMessage(assistantMsg("root reply"));
+		session.appendSessionInfo("Branch A title");
+		const branchALeaf = session.appendMessage(userMsg("branch a work"));
+
+		session.branch(root);
+		const branchBMsg = session.appendMessage(userMsg("branch b work"));
+		session.appendSessionInfo("Branch B title");
+		const branchBLeaf = session.appendMessage(assistantMsg("branch b reply"));
+
+		expect(session.getSessionName()).toBe("Branch B title");
+		expect(session.getSessionName(branchALeaf)).toBe("Branch A title");
+		expect(session.getSessionName(branchBLeaf)).toBe("Branch B title");
+		expect(session.getSessionName(branchBMsg)).toBeUndefined();
+	});
+
 	it("extracts correct path from branched tree", () => {
 		const session = SessionManager.inMemory();
 

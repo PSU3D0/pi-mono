@@ -1487,6 +1487,7 @@ export class InteractiveMode {
 
 					this.chatContainer.clear();
 					this.renderInitialMessages();
+					this.updateTerminalTitle();
 					if (result.editorText && !this.editor.getText().trim()) {
 						this.editor.setText(result.editorText);
 					}
@@ -3687,6 +3688,7 @@ export class InteractiveMode {
 					enableInstallTelemetry: this.settingsManager.getEnableInstallTelemetry(),
 					doubleEscapeAction: this.settingsManager.getDoubleEscapeAction(),
 					treeFilterMode: this.settingsManager.getTreeFilterMode(),
+					treeTimeFilterMode: this.settingsManager.getTreeTimeFilterMode(),
 					showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
 					editorPaddingX: this.settingsManager.getEditorPaddingX(),
 					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
@@ -3776,6 +3778,9 @@ export class InteractiveMode {
 					},
 					onTreeFilterModeChange: (mode) => {
 						this.settingsManager.setTreeFilterMode(mode);
+					},
+					onTreeTimeFilterModeChange: (mode) => {
+						this.settingsManager.setTreeTimeFilterMode(mode);
 					},
 					onShowHardwareCursorChange: (enabled) => {
 						this.settingsManager.setShowHardwareCursor(enabled);
@@ -4033,6 +4038,8 @@ export class InteractiveMode {
 		const tree = this.sessionManager.getTree();
 		const realLeafId = this.sessionManager.getLeafId();
 		const initialFilterMode = this.settingsManager.getTreeFilterMode();
+		const initialTimeFilterMode = this.settingsManager.getTreeTimeFilterMode();
+		const sessionName = this.sessionManager.getSessionName();
 
 		if (tree.length === 0) {
 			this.showStatus("No entries in session");
@@ -4128,6 +4135,7 @@ export class InteractiveMode {
 						// Update UI
 						this.chatContainer.clear();
 						this.renderInitialMessages();
+						this.updateTerminalTitle();
 						if (result.editorText && !this.editor.getText().trim()) {
 							this.editor.setText(result.editorText);
 						}
@@ -4153,6 +4161,8 @@ export class InteractiveMode {
 				},
 				initialSelectedId,
 				initialFilterMode,
+				initialTimeFilterMode,
+				sessionName,
 			);
 			return { component: selector, focus: selector };
 		});

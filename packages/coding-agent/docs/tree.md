@@ -40,7 +40,8 @@ Sessions are stored as trees where each entry has an `id` and `parentId`. The "l
 | Enter | Select node |
 | Escape/Ctrl+C | Cancel |
 | Ctrl+U | Toggle: user messages only |
-| Ctrl+O | Toggle: show all (including custom/label entries) |
+| Ctrl+O / Ctrl+Shift+O | Cycle content filters forward/backward |
+| Ctrl+W / Ctrl+Shift+W | Cycle time filters forward/backward (`all`, `1w`, `2w`, `3w`, `1mo`) |
 
 `Ctrl+←` or `Alt+←` folds the current node if it is foldable. Foldable nodes are roots and branch segment starts that have visible children. If the current node is not foldable, or is already folded, the selection jumps up to the previous visible branch segment start.
 
@@ -55,7 +56,8 @@ Sessions are stored as trees where each entry has an `id` and `parentId`. The "l
 - Foldable branch starts show `⊟` in the connector. Folded branches show `⊞`
 - Active path marker `•` appears after the fold indicator when applicable
 - Search and filter changes reset all folds
-- Default filter hides `label` and `custom` entries (shown in Ctrl+O mode)
+- Default content filter hides `label` and `custom` entries (shown in Ctrl+O mode)
+- Time filters hide older entries by entry timestamp while keeping the current leaf visible
 - At each branch point, the active subtree is shown first; other sibling branches are sorted by timestamp (oldest first)
 
 ## Selection Behavior

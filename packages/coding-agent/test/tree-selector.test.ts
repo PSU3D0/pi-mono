@@ -20,23 +20,33 @@ beforeEach(() => {
 });
 
 // Helper to create a user message entry
-function userMessage(id: string, parentId: string | null, content: string): SessionMessageEntry {
+function userMessage(
+	id: string,
+	parentId: string | null,
+	content: string,
+	timestamp = new Date(),
+): SessionMessageEntry {
 	return {
 		type: "message",
 		id,
 		parentId,
-		timestamp: new Date().toISOString(),
-		message: { role: "user", content, timestamp: Date.now() },
+		timestamp: timestamp.toISOString(),
+		message: { role: "user", content, timestamp: timestamp.getTime() },
 	};
 }
 
 // Helper to create an assistant message entry
-function assistantMessage(id: string, parentId: string | null, text: string): SessionMessageEntry {
+function assistantMessage(
+	id: string,
+	parentId: string | null,
+	text: string,
+	timestamp = new Date(),
+): SessionMessageEntry {
 	return {
 		type: "message",
 		id,
 		parentId,
-		timestamp: new Date().toISOString(),
+		timestamp: timestamp.toISOString(),
 		message: {
 			role: "assistant",
 			content: [{ type: "text", text }],
@@ -52,18 +62,18 @@ function assistantMessage(id: string, parentId: string | null, text: string): Se
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "stop",
-			timestamp: Date.now(),
+			timestamp: timestamp.getTime(),
 		},
 	};
 }
 
 // Helper to create a tool-call-only assistant message (filtered out in default mode)
-function toolCallOnlyAssistant(id: string, parentId: string | null): SessionMessageEntry {
+function toolCallOnlyAssistant(id: string, parentId: string | null, timestamp = new Date()): SessionMessageEntry {
 	return {
 		type: "message",
 		id,
 		parentId,
-		timestamp: new Date().toISOString(),
+		timestamp: timestamp.toISOString(),
 		message: {
 			role: "assistant",
 			content: [{ type: "toolCall", id: `tc-${id}`, name: "read", arguments: { path: "test.ts" } }],
@@ -79,18 +89,18 @@ function toolCallOnlyAssistant(id: string, parentId: string | null): SessionMess
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "toolUse",
-			timestamp: Date.now(),
+			timestamp: timestamp.getTime(),
 		},
 	};
 }
 
 // Helper to create a model_change entry
-function modelChange(id: string, parentId: string | null): ModelChangeEntry {
+function modelChange(id: string, parentId: string | null, timestamp = new Date()): ModelChangeEntry {
 	return {
 		type: "model_change",
 		id,
 		parentId,
-		timestamp: new Date().toISOString(),
+		timestamp: timestamp.toISOString(),
 		provider: "anthropic",
 		modelId: "claude-sonnet-4",
 	};
@@ -275,6 +285,170 @@ describe("TreeSelectorComponent", () => {
 			render = list.render(200).join("\n");
 			expect(render).toContain("3/28 14:32");
 			expect(render).toContain("[+label time]");
+		});
+	});
+
+	describe("time filters", () => {
+		test("tree header help wraps instead of truncating in narrow widths", () => {
+			const entries = [userMessage("user-1", null, "hello"), assistantMessage("asst-1", "user-1", "hi")];
+			const tree = buildTree(entries);
+			const selector = new TreeSelectorComponent(
+				tree,
+				"asst-1",
+				24,
+				() => {},
+				() => {},
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				"A very long session title that should wrap cleanly in narrow panes",
+			);
+			const render = selector.render(60).join("\n");
+
+			expect(render).toContain("A very long session title");
+			expect(render).toContain("^W/⇧^W: time");
+			expect(render).toContain("label time");
+		});
+
+		test("metadata-only sessions explain that entries are hidden by the current filter", () => {
+			const entries: SessionEntry[] = [
+				modelChange("model-1", null),
+				{
+					type: "thinking_level_change",
+					id: "thinking-1",
+					parentId: "model-1",
+					timestamp: new Date().toISOString(),
+					thinkingLevel: "high",
+				},
+			];
+			const tree = buildTree(entries);
+			const selector = new TreeSelectorComponent(
+				tree,
+				"thinking-1",
+				24,
+				() => {},
+				() => {},
+			);
+			const render = selector.getTreeList().render(200).join("\n");
+
+			expect(render).toContain("No visible entries for current filter");
+			expect(render).toContain("Press Ctrl+A or Ctrl+O to show all");
+		});
+
+		test("ctrl+w cycles to 1w and hides older ancestors while keeping recent descendants", () => {
+			const now = new Date();
+			const old = new Date(now.getTime() - 35 * 24 * 60 * 60 * 1000);
+			const recent = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+			const recentReply = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
+			const entries = [
+				userMessage("user-old", null, "old root", old),
+				assistantMessage("asst-old", "user-old", "old response", old),
+				userMessage("user-recent", "asst-old", "recent branch", recent),
+				assistantMessage("asst-recent", "user-recent", "recent reply", recentReply),
+			];
+			const tree = buildTree(entries);
+			const selector = new TreeSelectorComponent(
+				tree,
+				"asst-recent",
+				24,
+				() => {},
+				() => {},
+			);
+			const list = selector.getTreeList();
+
+			let render = list.render(200).join("\n");
+			expect(render).toContain("old root");
+			expect(render).not.toContain("[1w]");
+
+			selector.handleInput("\x17"); // Ctrl+W -> 1w
+
+			render = list.render(200).join("\n");
+			expect(render).not.toContain("old root");
+			expect(render).toContain("recent branch");
+			expect(render).toContain("recent reply");
+			expect(render).toContain("[1w]");
+			expect(list.getSelectedNode()?.entry.id).toBe("asst-recent");
+		});
+
+		test("keeps the current leaf visible even when it is older than the selected time window", () => {
+			const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+			const entries = [
+				userMessage("user-old", null, "old root", old),
+				assistantMessage("asst-old", "user-old", "old leaf", old),
+			];
+			const tree = buildTree(entries);
+			const selector = new TreeSelectorComponent(
+				tree,
+				"asst-old",
+				24,
+				() => {},
+				() => {},
+				undefined,
+				undefined,
+				undefined,
+				"1w",
+			);
+			const list = selector.getTreeList();
+			const render = list.render(200).join("\n");
+
+			expect(list.getSelectedNode()?.entry.id).toBe("asst-old");
+			expect(render).toContain("old leaf");
+			expect(render).toContain("[1w]");
+		});
+
+		test("search includes the session title even when session_info entries are hidden", () => {
+			const entries = [userMessage("user-1", null, "hello"), assistantMessage("asst-1", "user-1", "hi")];
+			const tree = buildTree(entries);
+			const selector = new TreeSelectorComponent(
+				tree,
+				"asst-1",
+				24,
+				() => {},
+				() => {},
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				"Quarterly planning checkpoint",
+			);
+			const list = selector.getTreeList();
+
+			for (const ch of "checkpoint") {
+				selector.handleInput(ch);
+			}
+
+			expect(list.getSelectedNode()?.entry.id).toBe("asst-1");
+			expect(list.render(200).join("\n")).toContain("hi");
+		});
+
+		test("renders smart-title custom entries with their title in all mode", () => {
+			const entries: SessionEntry[] = [
+				userMessage("user-1", null, "hello"),
+				assistantMessage("asst-1", "user-1", "hi"),
+				{
+					type: "custom",
+					customType: "smart-title",
+					data: { title: "Fixing smart-title branch restore", description: "desc" },
+					id: "smart-title-1",
+					parentId: "asst-1",
+					timestamp: new Date().toISOString(),
+				},
+			];
+			const tree = buildTree(entries);
+			const selector = new TreeSelectorComponent(
+				tree,
+				"smart-title-1",
+				24,
+				() => {},
+				() => {},
+				undefined,
+				undefined,
+				"all",
+			);
+			const render = selector.getTreeList().render(200).join("\n");
+
+			expect(render).toContain("[smart-title: Fixing smart-title branch restore]");
 		});
 	});
 

@@ -13,7 +13,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "fs";
-import { open, readdir, readFile, stat } from "fs/promises";
+import { open, readdir, readFile, stat, type FileHandle } from "fs/promises";
 import { join, resolve } from "path";
 import { v7 as uuidv7 } from "uuid";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
@@ -559,7 +559,7 @@ function getSessionModifiedDate(entries: FileEntry[], header: SessionHeader, sta
 async function buildSessionInfoFast(filePath: string): Promise<SessionInfo | null> {
 	const CHUNK_SIZE = 8192; // 8KB — enough for header + first message + a few entries
 
-	let fh;
+	let fh: FileHandle | undefined;
 	try {
 		const stats = await stat(filePath);
 		fh = await open(filePath, "r");
@@ -660,9 +660,10 @@ async function buildSessionInfoFast(filePath: string): Promise<SessionInfo | nul
 
 		const cwd = typeof (header as SessionHeader).cwd === "string" ? (header as SessionHeader).cwd : "";
 		const parentSessionPath = (header as SessionHeader).parentSession;
-		const headerTime = typeof (header as SessionHeader).timestamp === "string"
-			? new Date((header as SessionHeader).timestamp).getTime()
-			: NaN;
+		const headerTime =
+			typeof (header as SessionHeader).timestamp === "string"
+				? new Date((header as SessionHeader).timestamp).getTime()
+				: NaN;
 
 		// Modified date: prefer last activity from tail, then header timestamp, then file mtime
 		const modified = lastActivityTimestamp
@@ -695,7 +696,7 @@ async function buildSessionInfoFast(filePath: string): Promise<SessionInfo | nul
 	}
 }
 
-async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
+async function _buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	try {
 		const content = await readFile(filePath, "utf8");
 		const entries: FileEntry[] = [];
@@ -1104,11 +1105,12 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/** Get the current session name from the latest session_info entry, if any. */
-	getSessionName(): string | undefined {
-		// Walk entries in reverse to find the latest session_info entry.
-		// Empty names explicitly clear the session title.
-		const entries = this.getEntries();
+	/**
+	 * Get the current branch's session name from the latest session_info entry on that branch, if any.
+	 * Empty names explicitly clear the session title.
+	 */
+	getSessionName(fromId?: string | null): string | undefined {
+		const entries = this.getBranch(fromId ?? undefined);
 		for (let i = entries.length - 1; i >= 0; i--) {
 			const entry = entries[i];
 			if (entry.type === "session_info") {
