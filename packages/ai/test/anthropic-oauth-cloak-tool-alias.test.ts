@@ -7,7 +7,7 @@ import {
 	reverseAlias,
 } from "../src/providers/anthropic-oauth-cloak.js";
 import type { Message, Tool } from "../src/types.js";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 function tool(name: string): Tool {
 	return {

@@ -1,5 +1,6 @@
 import type { ContextTierPolicy, Transport } from "@mariozechner/pi-ai";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { homedir } from "os";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
@@ -24,7 +25,9 @@ export interface RetrySettings {
 
 export interface TerminalSettings {
 	showImages?: boolean; // default: true (only relevant if terminal supports images)
+	imageWidthCells?: number; // default: 60 (preferred inline image width in terminal cells)
 	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
+	showTerminalProgress?: boolean; // default: false (OSC 9;4 terminal progress indicators)
 }
 
 export interface ImageSettings {
@@ -150,7 +153,7 @@ export class FileSettingsStorage implements SettingsStorage {
 	private globalSettingsPath: string;
 	private projectSettingsPath: string;
 
-	constructor(cwd: string = process.cwd(), agentDir: string = getAgentDir()) {
+	constructor(cwd: string, agentDir: string) {
 		this.globalSettingsPath = join(agentDir, "settings.json");
 		this.projectSettingsPath = join(cwd, CONFIG_DIR_NAME, "settings.json");
 	}
@@ -262,7 +265,7 @@ export class SettingsManager {
 	}
 
 	/** Create a SettingsManager that loads from files */
-	static create(cwd: string = process.cwd(), agentDir: string = getAgentDir()): SettingsManager {
+	static create(cwd: string, agentDir: string = getAgentDir()): SettingsManager {
 		const storage = new FileSettingsStorage(cwd, agentDir);
 		return SettingsManager.fromStorage(storage);
 	}
@@ -540,7 +543,17 @@ export class SettingsManager {
 	}
 
 	getSessionDir(): string | undefined {
-		return this.settings.sessionDir;
+		const sessionDir = this.settings.sessionDir;
+		if (!sessionDir) {
+			return sessionDir;
+		}
+		if (sessionDir === "~") {
+			return homedir();
+		}
+		if (sessionDir.startsWith("~/")) {
+			return join(homedir(), sessionDir.slice(2));
+		}
+		return sessionDir;
 	}
 
 	getDefaultProvider(): string | undefined {
@@ -878,6 +891,23 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getImageWidthCells(): number {
+		const width = this.settings.terminal?.imageWidthCells;
+		if (typeof width !== "number" || !Number.isFinite(width)) {
+			return 60;
+		}
+		return Math.max(1, Math.floor(width));
+	}
+
+	setImageWidthCells(width: number): void {
+		if (!this.globalSettings.terminal) {
+			this.globalSettings.terminal = {};
+		}
+		this.globalSettings.terminal.imageWidthCells = Math.max(1, Math.floor(width));
+		this.markModified("terminal", "imageWidthCells");
+		this.save();
+	}
+
 	getClearOnShrink(): boolean {
 		// Settings takes precedence, then env var, then default false
 		if (this.settings.terminal?.clearOnShrink !== undefined) {
@@ -892,6 +922,19 @@ export class SettingsManager {
 		}
 		this.globalSettings.terminal.clearOnShrink = enabled;
 		this.markModified("terminal", "clearOnShrink");
+		this.save();
+	}
+
+	getShowTerminalProgress(): boolean {
+		return this.settings.terminal?.showTerminalProgress ?? false;
+	}
+
+	setShowTerminalProgress(enabled: boolean): void {
+		if (!this.globalSettings.terminal) {
+			this.globalSettings.terminal = {};
+		}
+		this.globalSettings.terminal.showTerminalProgress = enabled;
+		this.markModified("terminal", "showTerminalProgress");
 		this.save();
 	}
 

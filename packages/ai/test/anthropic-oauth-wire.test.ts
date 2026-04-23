@@ -1,4 +1,4 @@
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { streamAnthropic } from "../src/providers/anthropic.js";
 import { _resetSessionIdCache } from "../src/providers/anthropic-oauth-cloak.js";

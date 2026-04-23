@@ -308,7 +308,7 @@ describe("TreeSelectorComponent", () => {
 
 			expect(render).toContain("A very long session title");
 			expect(render).toContain("^W/⇧^W: time");
-			expect(render).toContain("label time");
+			expect(render).toContain("shift+t: label");
 		});
 
 		test("metadata-only sessions explain that entries are hidden by the current filter", () => {

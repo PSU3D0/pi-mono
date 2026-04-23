@@ -101,8 +101,8 @@ function logResult(result: OverflowResult) {
 
 describe.skipIf(!RUN_LIVE_PROVIDER_TESTS)("Context overflow error handling", () => {
 	describe.skipIf(!process.env.ANTHROPIC_API_KEY)("Anthropic (API Key)", () => {
-		it("claude-3-5-haiku - should detect overflow via isContextOverflow", async () => {
-			const model = getModel("anthropic", "claude-3-5-haiku-20241022");
+		it("claude-haiku-4-5 - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("anthropic", "claude-haiku-4-5");
 			const result = await testContextOverflow(model, process.env.ANTHROPIC_API_KEY!);
 			logResult(result);
 
@@ -528,8 +528,8 @@ describe.skipIf(!RUN_LIVE_PROVIDER_TESTS)("Context overflow error handling", () 
 		}, 120000);
 
 		// Meta/Llama backend
-		it("meta-llama/llama-4-maverick via OpenRouter - should detect overflow via isContextOverflow", async () => {
-			const model = getModel("openrouter", "meta-llama/llama-4-maverick");
+		it("meta-llama/llama-4-scout via OpenRouter - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("openrouter", "meta-llama/llama-4-scout");
 			const result = await testContextOverflow(model, process.env.OPENROUTER_API_KEY!);
 			logResult(result);
 

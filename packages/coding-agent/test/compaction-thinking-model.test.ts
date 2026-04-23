@@ -18,7 +18,7 @@ import { AgentSession } from "../src/core/agent-session.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
-import { codingTools } from "../src/core/tools/index.js";
+import { createCodingTools } from "../src/core/tools/index.js";
 import {
 	API_KEY,
 	createTestResourceLoader,
@@ -73,7 +73,7 @@ describe.skipIf(!(RUN_LIVE_COMPACTION_TESTS && HAS_ANTIGRAVITY_AUTH))(
 			initialState: {
 				model,
 				systemPrompt: "You are a helpful assistant. Be concise.",
-				tools: codingTools,
+				tools: createCodingTools(process.cwd()),
 				thinkingLevel,
 			},
 		});
@@ -173,7 +173,7 @@ describe.skipIf(!(RUN_LIVE_COMPACTION_TESTS && HAS_ANTHROPIC_AUTH))(
 			initialState: {
 				model,
 				systemPrompt: "You are a helpful assistant. Be concise.",
-				tools: codingTools,
+				tools: createCodingTools(process.cwd()),
 				thinkingLevel,
 			},
 		});

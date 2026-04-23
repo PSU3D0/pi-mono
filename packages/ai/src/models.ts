@@ -176,7 +176,7 @@ export function getModels<TProvider extends KnownProvider>(
  * Check if a model supports xhigh thinking level.
  *
  * Supported today:
- * - GPT-5.2 / GPT-5.3 / GPT-5.4 model families
+ * - GPT-5.2 / GPT-5.3 / GPT-5.4 / GPT-5.5 model families
  * - Opus 4.6+ models (xhigh maps to adaptive effort "max" on Anthropic-compatible providers)
  */
 export function supportsXhigh<TApi extends Api>(model: Model<TApi>): boolean {
