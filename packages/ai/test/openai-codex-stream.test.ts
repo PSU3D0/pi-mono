@@ -10,6 +10,7 @@ import type { Context, Model } from "../src/types.js";
 
 const originalFetch = global.fetch;
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+const originalCodexVersion = process.env.PI_AI_CODEX_VERSION;
 
 afterEach(() => {
 	global.fetch = originalFetch;
@@ -17,6 +18,11 @@ afterEach(() => {
 		delete process.env.PI_CODING_AGENT_DIR;
 	} else {
 		process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+	}
+	if (originalCodexVersion === undefined) {
+		delete process.env.PI_AI_CODEX_VERSION;
+	} else {
+		process.env.PI_AI_CODEX_VERSION = originalCodexVersion;
 	}
 	vi.restoreAllMocks();
 });
@@ -141,6 +147,8 @@ describe("openai-codex streaming", () => {
 				// OpenAI-Beta should NOT be set for SSE requests (only for WebSocket)
 				expect(headers?.has("OpenAI-Beta")).toBe(false);
 				expect(headers?.get("originator")).toBe("codex_cli_rs");
+				expect(headers?.get("version")).toBe("0.124.0");
+				expect(headers?.get("User-Agent")).toContain("codex_cli_rs/0.124.0");
 				expect(headers?.get("accept")).toBe("text/event-stream");
 				expect(headers?.has("x-api-key")).toBe(false);
 				return new Response(stream, {
@@ -187,6 +195,60 @@ describe("openai-codex streaming", () => {
 
 		expect(sawTextDelta).toBe(true);
 		expect(sawDone).toBe(true);
+	});
+
+	it("honors PI_AI_CODEX_VERSION when advertising the Codex client version", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
+		process.env.PI_CODING_AGENT_DIR = tempDir;
+		process.env.PI_AI_CODEX_VERSION = "0.125.0";
+		const token = mockToken();
+		const encoder = new TextEncoder();
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(encoder.encode(buildSSEPayload({ status: "completed" })));
+				controller.close();
+			},
+		});
+
+		global.fetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url === "https://api.github.com/repos/openai/codex/releases/latest") {
+				return new Response(JSON.stringify({ tag_name: "rust-v0.0.0" }), { status: 200 });
+			}
+			if (url.startsWith("https://raw.githubusercontent.com/openai/codex/")) {
+				return new Response("PROMPT", { status: 200, headers: { etag: '"etag"' } });
+			}
+			if (url === "https://chatgpt.com/backend-api/codex/responses") {
+				const headers = init?.headers instanceof Headers ? init.headers : undefined;
+				expect(headers?.get("version")).toBe("0.125.0");
+				expect(headers?.get("User-Agent")).toContain("codex_cli_rs/0.125.0");
+				return new Response(stream, {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}
+			return new Response("not found", { status: 404 });
+		}) as typeof fetch;
+
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+
+		const context: Context = {
+			systemPrompt: "You are a helpful assistant.",
+			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+		};
+
+		await streamOpenAICodexResponses(model, context, { apiKey: token }).result();
 	});
 
 	it("completes after response.completed even when the SSE body stays open", async () => {

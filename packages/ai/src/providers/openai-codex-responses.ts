@@ -42,8 +42,12 @@ import { buildBaseOptions, clampReasoning } from "./simple-options.js";
 // ============================================================================
 
 const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
-const DEFAULT_CODEX_CLIENT_VERSION = process.env.PI_AI_CODEX_VERSION || process.env.npm_package_version || "0.67.68";
+const DEFAULT_CODEX_CLIENT_VERSION = "0.124.0";
 const JWT_CLAIM_PATH = "https://api.openai.com/auth" as const;
+
+function getCodexClientVersion(): string {
+	return process.env.PI_AI_CODEX_VERSION || DEFAULT_CODEX_CLIENT_VERSION;
+}
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
 const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
@@ -1103,12 +1107,13 @@ function buildBaseCodexHeaders(
 	// Match canonical codex_cli_rs originator — the chatgpt.com/backend-api endpoint
 	// whitelists first-party originators (codex_cli_rs, codex_vscode, codex_sdk_ts).
 	headers.set("originator", "codex_cli_rs");
+	const clientVersion = getCodexClientVersion();
 	// User-Agent must match the originator format: {originator}/{version} ({os} {os_version}; {arch})
 	const userAgent = _os
-		? `codex_cli_rs/${DEFAULT_CODEX_CLIENT_VERSION} (${_os.platform()} ${_os.release()}; ${_os.arch()})`
-		: `codex_cli_rs/${DEFAULT_CODEX_CLIENT_VERSION}`;
+		? `codex_cli_rs/${clientVersion} (${_os.platform()} ${_os.release()}; ${_os.arch()})`
+		: `codex_cli_rs/${clientVersion}`;
 	headers.set("User-Agent", userAgent);
-	headers.set("version", DEFAULT_CODEX_CLIENT_VERSION);
+	headers.set("version", clientVersion);
 	return headers;
 }
 
