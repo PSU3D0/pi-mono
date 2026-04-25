@@ -3,6 +3,7 @@
  */
 
 import {
+	type AnthropicMessagesCompat,
 	type Api,
 	type AssistantMessageEventStream,
 	type Context,
@@ -25,7 +26,7 @@ import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
 import { getAgentDir } from "../config.js";
-import type { AuthStorage } from "./auth-storage.js";
+import type { AuthStatus, AuthStorage } from "./auth-storage.js";
 import {
 	clearConfigValueCache,
 	resolveConfigValueOrThrow,
@@ -98,10 +99,12 @@ const OpenAICompletionsCompatSchema = Type.Object({
 	requiresToolResultName: Type.Optional(Type.Boolean()),
 	requiresAssistantAfterToolResult: Type.Optional(Type.Boolean()),
 	requiresThinkingAsText: Type.Optional(Type.Boolean()),
+	requiresReasoningContentOnAssistantMessages: Type.Optional(Type.Boolean()),
 	thinkingFormat: Type.Optional(
 		Type.Union([
 			Type.Literal("openai"),
 			Type.Literal("openrouter"),
+			Type.Literal("deepseek"),
 			Type.Literal("zai"),
 			Type.Literal("qwen"),
 			Type.Literal("qwen-chat-template"),
@@ -111,13 +114,24 @@ const OpenAICompletionsCompatSchema = Type.Object({
 	openRouterRouting: Type.Optional(OpenRouterRoutingSchema),
 	vercelGatewayRouting: Type.Optional(VercelGatewayRoutingSchema),
 	supportsStrictMode: Type.Optional(Type.Boolean()),
+	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
 });
 
 const OpenAIResponsesCompatSchema = Type.Object({
-	// Reserved for future use
+	sendSessionIdHeader: Type.Optional(Type.Boolean()),
+	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
 });
 
-const OpenAICompatSchema = Type.Union([OpenAICompletionsCompatSchema, OpenAIResponsesCompatSchema]);
+const AnthropicMessagesCompatSchema = Type.Object({
+	supportsEagerToolInputStreaming: Type.Optional(Type.Boolean()),
+	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
+});
+
+const ProviderCompatSchema = Type.Union([
+	OpenAICompletionsCompatSchema,
+	OpenAIResponsesCompatSchema,
+	AnthropicMessagesCompatSchema,
+]);
 
 const ContextTierSchema = Type.Object({
 	id: Type.String({ minLength: 1 }),
@@ -162,7 +176,7 @@ const ModelDefinitionSchema = Type.Object({
 	compaction: Type.Optional(ModelCompactionSettingsSchema),
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
-	compat: Type.Optional(OpenAICompatSchema),
+	compat: Type.Optional(ProviderCompatSchema),
 });
 
 // Schema for per-model overrides (all fields optional, merged with built-in model)
@@ -183,7 +197,7 @@ const ModelOverrideSchema = Type.Object({
 	compaction: Type.Optional(ModelCompactionSettingsSchema),
 	maxTokens: Type.Optional(Type.Number()),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
-	compat: Type.Optional(OpenAICompatSchema),
+	compat: Type.Optional(ProviderCompatSchema),
 });
 
 type ModelOverride = Static<typeof ModelOverrideSchema>;
@@ -193,7 +207,7 @@ const ProviderConfigSchema = Type.Object({
 	apiKey: Type.Optional(Type.String({ minLength: 1 })),
 	api: Type.Optional(Type.String({ minLength: 1 })),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
-	compat: Type.Optional(OpenAICompatSchema),
+	compat: Type.Optional(ProviderCompatSchema),
 	authHeader: Type.Optional(Type.Boolean()),
 	models: Type.Optional(Type.Array(ModelDefinitionSchema)),
 	modelOverrides: Type.Optional(Type.Record(Type.String(), ModelOverrideSchema)),
@@ -263,9 +277,9 @@ function mergeCompat(
 ): Model<Api>["compat"] | undefined {
 	if (!overrideCompat) return baseCompat;
 
-	const base = baseCompat as OpenAICompletionsCompat | OpenAIResponsesCompat | undefined;
-	const override = overrideCompat as OpenAICompletionsCompat | OpenAIResponsesCompat;
-	const merged = { ...base, ...override } as OpenAICompletionsCompat | OpenAIResponsesCompat;
+	const base = baseCompat as OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat | undefined;
+	const override = overrideCompat as OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat;
+	const merged = { ...base, ...override } as OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat;
 
 	const baseCompletions = base as OpenAICompletionsCompat | undefined;
 	const overrideCompletions = override as OpenAICompletionsCompat;
@@ -717,6 +731,32 @@ export class ModelRegistry {
 				error: error instanceof Error ? error.message : String(error),
 			};
 		}
+	}
+
+	/**
+	 * Return auth status for a provider, including request auth configured in models.json.
+	 * This intentionally does not execute command-backed config values.
+	 */
+	getProviderAuthStatus(provider: string): AuthStatus {
+		const authStatus = this.authStorage.getAuthStatus(provider);
+		if (authStatus.source) {
+			return authStatus;
+		}
+
+		const providerApiKey = this.providerRequestConfigs.get(provider)?.apiKey;
+		if (!providerApiKey) {
+			return authStatus;
+		}
+
+		if (providerApiKey.startsWith("!")) {
+			return { configured: true, source: "models_json_command" };
+		}
+
+		if (process.env[providerApiKey]) {
+			return { configured: true, source: "environment", label: providerApiKey };
+		}
+
+		return { configured: true, source: "models_json_key" };
 	}
 
 	/**

@@ -53,6 +53,7 @@ import {
 	getAgentDir,
 	getAuthPath,
 	getDebugLogPath,
+	getDocsPath,
 	getShareViewerUrl,
 	getUpdateInstruction,
 	VERSION,
@@ -163,7 +164,7 @@ type CompactionQueuedMessage = {
 };
 
 const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING =
-	"Anthropic subscription auth is active. Third-party usage now draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage.";
+	"Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage.";
 
 function isAnthropicSubscriptionAuthKey(apiKey: string | undefined): boolean {
 	return typeof apiKey === "string" && apiKey.startsWith("sk-ant-oat");
@@ -177,10 +178,14 @@ function hasDefaultModelProvider(providerId: string): providerId is keyof typeof
 	return providerId in defaultModelPerProvider;
 }
 
+const BEDROCK_PROVIDER_ID = "amazon-bedrock";
+
 const API_KEY_LOGIN_PROVIDERS: Record<string, string> = {
 	anthropic: "Anthropic",
+	[BEDROCK_PROVIDER_ID]: "Amazon Bedrock",
 	"azure-openai-responses": "Azure OpenAI Responses",
 	cerebras: "Cerebras",
+	deepseek: "DeepSeek",
 	fireworks: "Fireworks",
 	google: "Google Gemini",
 	"google-vertex": "Google Vertex AI",
@@ -1576,7 +1581,7 @@ export class InteractiveMode {
 
 		const extensionRunner = this.session.extensionRunner;
 		this.setupExtensionShortcuts(extensionRunner);
-		this.showLoadedResources({ force: false });
+		this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true });
 		this.showStartupNoticesIfNeeded();
 	}
 
@@ -3224,7 +3229,8 @@ export class InteractiveMode {
 
 	/**
 	 * Gracefully shutdown the agent.
-	 * Emits shutdown event to extensions, then exits.
+	 * Stops the TUI before emitting shutdown events so extension UI cleanup cannot
+	 * repaint the final frame while the process is exiting.
 	 */
 	private isShuttingDown = false;
 
@@ -3232,17 +3238,13 @@ export class InteractiveMode {
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
 		this.unregisterSignalHandlers();
-		await this.runtimeHost.dispose();
-
-		// Wait for any pending renders to complete
-		// requestRender() uses process.nextTick(), so we wait one tick
-		await new Promise((resolve) => process.nextTick(resolve));
 
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
 		await this.ui.terminal.drainInput(1000);
 
 		this.stop();
+		await this.runtimeHost.dispose();
 		process.exit(0);
 	}
 
@@ -4005,7 +4007,7 @@ export class InteractiveMode {
 				},
 				() => {
 					done();
-					this.showLoginAuthTypeSelector();
+					this.ui.requestRender();
 				},
 				initialSearchInput,
 			);
@@ -4495,6 +4497,8 @@ export class InteractiveMode {
 
 					if (providerOption.authType === "oauth") {
 						await this.showLoginDialog(providerOption.id, providerOption.name);
+					} else if (providerOption.id === BEDROCK_PROVIDER_ID) {
+						this.showBedrockSetupDialog(providerOption.id, providerOption.name);
 					} else {
 						await this.showApiKeyLoginDialog(providerOption.id, providerOption.name);
 					}
@@ -4503,6 +4507,7 @@ export class InteractiveMode {
 					done();
 					this.showLoginAuthTypeSelector();
 				},
+				(providerId) => this.session.modelRegistry.getProviderAuthStatus(providerId),
 			);
 			return { component: selector, focus: selector };
 		});
@@ -4516,7 +4521,9 @@ export class InteractiveMode {
 
 		const providerOptions = this.getLogoutProviderOptions();
 		if (providerOptions.length === 0) {
-			this.showStatus("No providers logged in. Use /login first.");
+			this.showStatus(
+				"No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.",
+			);
 			return;
 		}
 
@@ -4540,7 +4547,7 @@ export class InteractiveMode {
 						const message =
 							providerOption.authType === "oauth"
 								? `Logged out of ${providerOption.name}`
-								: `Removed API key for ${providerOption.name}`;
+								: `Removed stored API key for ${providerOption.name}. Environment variables and models.json config are unchanged.`;
 						this.showStatus(message);
 					} catch (error: unknown) {
 						this.showError(`Logout failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -4606,6 +4613,34 @@ export class InteractiveMode {
 				void this.maybeWarnAboutAnthropicSubscriptionAuth();
 			}
 		}
+	}
+
+	private showBedrockSetupDialog(providerId: string, providerName: string): void {
+		const restoreEditor = () => {
+			this.editorContainer.clear();
+			this.editorContainer.addChild(this.editor);
+			this.ui.setFocus(this.editor);
+			this.ui.requestRender();
+		};
+
+		const dialog = new LoginDialogComponent(
+			this.ui,
+			providerId,
+			() => restoreEditor(),
+			providerName,
+			"Amazon Bedrock setup",
+		);
+		dialog.showInfo([
+			theme.fg("text", "Amazon Bedrock uses AWS credentials instead of a single API key."),
+			theme.fg("text", "Configure an AWS profile, IAM keys, bearer token, or role-based credentials."),
+			theme.fg("muted", "See:"),
+			theme.fg("accent", `  ${path.join(getDocsPath(), "providers.md")}`),
+		]);
+
+		this.editorContainer.clear();
+		this.editorContainer.addChild(dialog);
+		this.ui.setFocus(dialog);
+		this.ui.requestRender();
 	}
 
 	private async showApiKeyLoginDialog(providerId: string, providerName: string): Promise<void> {

@@ -9,6 +9,7 @@ import type {
 import { getEnvApiKey } from "../env-api-keys.js";
 import { calculateCost } from "../models.js";
 import type {
+	AnthropicMessagesCompat,
 	Api,
 	AssistantMessage,
 	CacheRetention,
@@ -56,14 +57,14 @@ function resolveCacheRetention(cacheRetention?: CacheRetention): CacheRetention 
 }
 
 function getCacheControl(
-	baseUrl: string,
+	model: Model<"anthropic-messages">,
 	cacheRetention?: CacheRetention,
 ): { retention: CacheRetention; cacheControl?: CacheControlEphemeral } {
 	const retention = resolveCacheRetention(cacheRetention);
 	if (retention === "none") {
 		return { retention };
 	}
-	const ttl = retention === "long" && baseUrl.includes("api.anthropic.com") ? "1h" : undefined;
+	const ttl = retention === "long" && getAnthropicCompat(model).supportsLongCacheRetention ? "1h" : undefined;
 	return {
 		retention,
 		cacheControl: { type: "ephemeral", ...(ttl && { ttl }) },
@@ -164,6 +165,16 @@ function convertContentBlocks(content: (TextContent | ImageContent)[]):
 export type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export type AnthropicThinkingDisplay = "summarized" | "omitted";
+
+const FINE_GRAINED_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14";
+const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
+
+function getAnthropicCompat(model: Model<"anthropic-messages">): Required<AnthropicMessagesCompat> {
+	return {
+		supportsEagerToolInputStreaming: model.compat?.supportsEagerToolInputStreaming ?? true,
+		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
+	};
+}
 
 export interface AnthropicOptions extends StreamOptions {
 	/**
@@ -481,6 +492,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 					model,
 					resolvedApiKey,
 					options?.interleavedThinking ?? true,
+					shouldUseFineGrainedToolStreamingBeta(model, context),
 					options?.headers,
 					copilotDynamicHeaders,
 					cloakActive,
@@ -519,9 +531,12 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
 			}
-			const response = await client.messages
-				.create({ ...params, stream: true }, { signal: options?.signal })
-				.asResponse();
+			const requestOptions = {
+				...(options?.signal ? { signal: options.signal } : {}),
+				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+				...(options?.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+			};
+			const response = await client.messages.create({ ...params, stream: true }, requestOptions).asResponse();
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
@@ -816,6 +831,7 @@ function createClient(
 	model: Model<"anthropic-messages">,
 	apiKey: string,
 	interleavedThinking: boolean,
+	useFineGrainedToolStreamingBeta: boolean,
 	optionsHeaders?: Record<string, string>,
 	dynamicHeaders?: Record<string, string>,
 	oauthCloakActive: boolean = false,
@@ -824,11 +840,14 @@ function createClient(
 	// The beta header is deprecated on Opus 4.6 and redundant on Sonnet 4.6, so skip it.
 	const needsInterleavedBeta = interleavedThinking && !supportsAdaptiveThinking(model.id);
 
-	// Copilot: Bearer auth, selective betas (no fine-grained-tool-streaming)
+	// Copilot: Bearer auth, selective betas.
 	if (model.provider === "github-copilot") {
 		const betaFeatures: string[] = [];
+		if (useFineGrainedToolStreamingBeta) {
+			betaFeatures.push(FINE_GRAINED_TOOL_STREAMING_BETA);
+		}
 		if (needsInterleavedBeta) {
-			betaFeatures.push("interleaved-thinking-2025-05-14");
+			betaFeatures.push(INTERLEAVED_THINKING_BETA);
 		}
 
 		const client = new Anthropic({
@@ -852,8 +871,11 @@ function createClient(
 	}
 
 	const betaFeatures: string[] = [];
+	if (useFineGrainedToolStreamingBeta) {
+		betaFeatures.push(FINE_GRAINED_TOOL_STREAMING_BETA);
+	}
 	if (needsInterleavedBeta) {
-		betaFeatures.push("interleaved-thinking-2025-05-14");
+		betaFeatures.push(INTERLEAVED_THINKING_BETA);
 	}
 
 	// OAuth: Bearer auth, Claude Code identity headers
@@ -943,7 +965,7 @@ function buildParams(
 	isOAuthToken: boolean,
 	options?: AnthropicOptions,
 ): MessageCreateParamsStreaming {
-	const { cacheControl } = getCacheControl(model.baseUrl, options?.cacheRetention);
+	const { cacheControl } = getCacheControl(model, options?.cacheRetention);
 	const params: MessageCreateParamsStreaming = {
 		model: model.id,
 		messages: convertMessages(context.messages, model, isOAuthToken, cacheControl),
@@ -983,8 +1005,13 @@ function buildParams(
 		params.temperature = options.temperature;
 	}
 
-	if (context.tools) {
-		params.tools = convertTools(context.tools, isOAuthToken, cacheControl);
+	if (context.tools && context.tools.length > 0) {
+		params.tools = convertTools(
+			context.tools,
+			isOAuthToken,
+			getAnthropicCompat(model).supportsEagerToolInputStreaming,
+			cacheControl,
+		);
 	}
 
 	// Configure thinking mode: adaptive (Opus 4.6+ and Sonnet 4.6),
@@ -1206,9 +1233,14 @@ function convertMessages(
 	return params;
 }
 
+function shouldUseFineGrainedToolStreamingBeta(model: Model<"anthropic-messages">, context: Context): boolean {
+	return !!context.tools?.length && !getAnthropicCompat(model).supportsEagerToolInputStreaming;
+}
+
 function convertTools(
 	tools: Tool[],
 	isOAuthToken: boolean,
+	supportsEagerToolInputStreaming: boolean,
 	cacheControl?: CacheControlEphemeral,
 ): Anthropic.Messages.Tool[] {
 	if (!tools) return [];
@@ -1219,7 +1251,7 @@ function convertTools(
 		return {
 			name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
 			description: tool.description,
-			eager_input_streaming: true,
+			...(supportsEagerToolInputStreaming ? { eager_input_streaming: true } : {}),
 			input_schema: {
 				type: "object",
 				properties: schema.properties ?? {},

@@ -144,8 +144,13 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 			if (nextParams !== undefined) {
 				params = nextParams as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming;
 			}
+			const requestOptions = {
+				...(options?.signal ? { signal: options.signal } : {}),
+				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+				...(options?.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+			};
 			const { data: openaiStream, response } = await client.chat.completions
-				.create(params, { signal: options?.signal })
+				.create(params, requestOptions)
 				.withResponse();
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
@@ -465,15 +470,18 @@ function buildParams(
 	cacheRetention: CacheRetention = resolveCacheRetention(options?.cacheRetention),
 ) {
 	const messages = convertMessages(model, context, compat);
-	const cacheControl = getCompatCacheControl(model, compat, cacheRetention);
+	const cacheControl = getCompatCacheControl(compat, cacheRetention);
 
 	const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
 		model: model.id,
 		messages,
 		stream: true,
 		prompt_cache_key:
-			model.baseUrl.includes("api.openai.com") && cacheRetention !== "none" ? options?.sessionId : undefined,
-		prompt_cache_retention: model.baseUrl.includes("api.openai.com") && cacheRetention === "long" ? "24h" : undefined,
+			(model.baseUrl.includes("api.openai.com") && cacheRetention !== "none") ||
+			(cacheRetention === "long" && compat.supportsLongCacheRetention)
+				? options?.sessionId
+				: undefined,
+		prompt_cache_retention: cacheRetention === "long" && compat.supportsLongCacheRetention ? "24h" : undefined,
 	};
 
 	if (compat.supportsUsageInStreaming !== false) {
@@ -496,7 +504,7 @@ function buildParams(
 		params.temperature = options.temperature;
 	}
 
-	if (context.tools) {
+	if (context.tools && context.tools.length > 0) {
 		params.tools = convertTools(context.tools, compat);
 		if (compat.zaiToolStream) {
 			(params as any).tool_stream = true;
@@ -523,6 +531,11 @@ function buildParams(
 			enable_thinking: !!options?.reasoningEffort,
 			preserve_thinking: true,
 		};
+	} else if (compat.thinkingFormat === "deepseek" && model.reasoning) {
+		(params as any).thinking = { type: options?.reasoningEffort ? "enabled" : "disabled" };
+		if (options?.reasoningEffort) {
+			(params as any).reasoning_effort = mapReasoningEffort(options.reasoningEffort, compat.reasoningEffortMap);
+		}
 	} else if (compat.thinkingFormat === "openrouter" && model.reasoning) {
 		// OpenRouter normalizes reasoning across providers via a nested reasoning object.
 		const openRouterParams = params as typeof params & { reasoning?: { effort?: string } };
@@ -565,7 +578,6 @@ function mapReasoningEffort(
 }
 
 function getCompatCacheControl(
-	model: Model<"openai-completions">,
 	compat: ResolvedOpenAICompletionsCompat,
 	cacheRetention: CacheRetention,
 ): OpenAICompatCacheControl | undefined {
@@ -573,7 +585,7 @@ function getCompatCacheControl(
 		return undefined;
 	}
 
-	const ttl = cacheRetention === "long" && model.baseUrl.includes("api.anthropic.com") ? "1h" : undefined;
+	const ttl = cacheRetention === "long" && compat.supportsLongCacheRetention ? "1h" : undefined;
 	return { type: "ephemeral", ...(ttl ? { ttl } : {}) };
 }
 
@@ -829,6 +841,13 @@ export function convertMessages(
 					(assistantMsg as any).reasoning_details = reasoningDetails;
 				}
 			}
+			if (
+				compat.requiresReasoningContentOnAssistantMessages &&
+				model.reasoning &&
+				(assistantMsg as { reasoning_content?: string }).reasoning_content === undefined
+			) {
+				(assistantMsg as { reasoning_content?: string }).reasoning_content = "";
+			}
 			// Skip assistant messages that have no content and no tool calls.
 			// Some providers require "either content or tool_calls, but not none".
 			// Other providers also don't accept empty assistant messages.
@@ -937,14 +956,12 @@ function parseChunkUsage(
 		prompt_tokens?: number;
 		completion_tokens?: number;
 		prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
-		completion_tokens_details?: { reasoning_tokens?: number };
 	},
 	model: Model<"openai-completions">,
 ): AssistantMessage["usage"] {
 	const promptTokens = rawUsage.prompt_tokens || 0;
 	const reportedCachedTokens = rawUsage.prompt_tokens_details?.cached_tokens || 0;
 	const cacheWriteTokens = rawUsage.prompt_tokens_details?.cache_write_tokens || 0;
-	const reasoningTokens = rawUsage.completion_tokens_details?.reasoning_tokens || 0;
 
 	// Normalize to pi-ai semantics:
 	// - cacheRead: hits from cache created by previous requests only
@@ -955,9 +972,8 @@ function parseChunkUsage(
 		cacheWriteTokens > 0 ? Math.max(0, reportedCachedTokens - cacheWriteTokens) : reportedCachedTokens;
 
 	const input = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
-	// Compute totalTokens ourselves since we add reasoning_tokens to output
-	// and some providers (e.g., Groq) don't include them in total_tokens
-	const outputTokens = (rawUsage.completion_tokens || 0) + reasoningTokens;
+	// OpenAI completion_tokens already includes reasoning_tokens.
+	const outputTokens = rawUsage.completion_tokens || 0;
 	const usage: AssistantMessage["usage"] = {
 		input,
 		output: outputTokens,
@@ -1022,10 +1038,18 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 
 	const isGrok = provider === "xai" || baseUrl.includes("api.x.ai");
 	const isGroq = provider === "groq" || baseUrl.includes("groq.com");
+	const isDeepSeek = provider === "deepseek" || baseUrl.includes("deepseek.com");
 	const cacheControlFormat = provider === "openrouter" && model.id.startsWith("anthropic/") ? "anthropic" : undefined;
 
-	const reasoningEffortMap =
-		isGroq && model.id === "qwen/qwen3-32b"
+	const reasoningEffortMap = isDeepSeek
+		? {
+				minimal: "high",
+				low: "high",
+				medium: "high",
+				high: "high",
+				xhigh: "max",
+			}
+		: isGroq && model.id === "qwen/qwen3-32b"
 			? {
 					minimal: "default",
 					low: "default",
@@ -1044,17 +1068,21 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		requiresToolResultName: false,
 		requiresAssistantAfterToolResult: false,
 		requiresThinkingAsText: false,
-		thinkingFormat: isZai
-			? "zai"
-			: provider === "openrouter" || baseUrl.includes("openrouter.ai")
-				? "openrouter"
-				: "openai",
+		requiresReasoningContentOnAssistantMessages: isDeepSeek,
+		thinkingFormat: isDeepSeek
+			? "deepseek"
+			: isZai
+				? "zai"
+				: provider === "openrouter" || baseUrl.includes("openrouter.ai")
+					? "openrouter"
+					: "openai",
 		openRouterRouting: {},
 		vercelGatewayRouting: {},
 		zaiToolStream: false,
 		supportsStrictMode: true,
 		cacheControlFormat,
 		sendSessionAffinityHeaders: false,
+		supportsLongCacheRetention: true,
 	};
 }
 
@@ -1077,6 +1105,9 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 		requiresAssistantAfterToolResult:
 			model.compat.requiresAssistantAfterToolResult ?? detected.requiresAssistantAfterToolResult,
 		requiresThinkingAsText: model.compat.requiresThinkingAsText ?? detected.requiresThinkingAsText,
+		requiresReasoningContentOnAssistantMessages:
+			model.compat.requiresReasoningContentOnAssistantMessages ??
+			detected.requiresReasoningContentOnAssistantMessages,
 		thinkingFormat: model.compat.thinkingFormat ?? detected.thinkingFormat,
 		openRouterRouting: model.compat.openRouterRouting ?? {},
 		vercelGatewayRouting: model.compat.vercelGatewayRouting ?? detected.vercelGatewayRouting,
@@ -1084,5 +1115,6 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 		supportsStrictMode: model.compat.supportsStrictMode ?? detected.supportsStrictMode,
 		cacheControlFormat: model.compat.cacheControlFormat ?? detected.cacheControlFormat,
 		sendSessionAffinityHeaders: model.compat.sendSessionAffinityHeaders ?? detected.sendSessionAffinityHeaders,
+		supportsLongCacheRetention: model.compat.supportsLongCacheRetention ?? detected.supportsLongCacheRetention,
 	};
 }

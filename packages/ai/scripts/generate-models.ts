@@ -3,7 +3,13 @@
 import { writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { Api, KnownProvider, Model, type OpenAICompletionsCompat } from "../src/types.js";
+import {
+	Api,
+	type AnthropicMessagesCompat,
+	KnownProvider,
+	Model,
+	type OpenAICompletionsCompat,
+} from "../src/types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -60,6 +66,17 @@ const KIMI_STATIC_HEADERS = {
 const AI_GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1";
 const AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh";
 const ZAI_TOOL_STREAM_UNSUPPORTED_MODELS = new Set(["glm-4.5", "glm-4.5-air", "glm-4.5-flash", "glm-4.5v"]);
+const EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS = new Set([
+	"github-copilot:claude-haiku-4.5",
+	"github-copilot:claude-sonnet-4",
+	"github-copilot:claude-sonnet-4.5",
+]);
+
+function getAnthropicMessagesCompat(provider: string, modelId: string): AnthropicMessagesCompat | undefined {
+	return EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS.has(`${provider}:${modelId}`)
+		? { supportsEagerToolInputStreaming: false }
+		: undefined;
+}
 
 function getBedrockBaseUrl(modelId: string): string {
 	return modelId.startsWith("eu.")
@@ -582,6 +599,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 						? "openai-responses"
 						: "openai-completions";
 
+				const anthropicCompat =
+					api === "anthropic-messages" ? getAnthropicMessagesCompat("github-copilot", modelId) : undefined;
+
 				const copilotModel: Model<any> = {
 					id: modelId,
 					name: m.name || modelId,
@@ -599,6 +619,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					contextWindow: m.limit?.context || 128000,
 					maxTokens: m.limit?.output || 8192,
 					headers: { ...COPILOT_STATIC_HEADERS },
+					...(anthropicCompat ? { compat: anthropicCompat } : {}),
 					// compat only applies to openai-completions
 					...(api === "openai-completions" ? {
 						compat: {
@@ -751,7 +772,7 @@ async function generateModels() {
 			candidate.contextWindow = 272000;
 			candidate.maxTokens = 128000;
 		}
-		if (candidate.provider === "openai" && candidate.id === "gpt-5.4") {
+		if (candidate.provider === "openai" && (candidate.id === "gpt-5.4" || candidate.id === "gpt-5.5")) {
 			candidate.contextWindow = 272000;
 			candidate.maxTokens = 128000;
 		}
@@ -1012,24 +1033,64 @@ async function generateModels() {
 		});
 	}
 
-	if (!allModels.some((m) => m.provider === "openai" && m.id === "gpt-5.5")) {
-		allModels.push({
-			id: "gpt-5.5",
-			name: "GPT-5.5",
-			api: "openai-responses",
-			baseUrl: "https://api.openai.com/v1",
-			provider: "openai",
+	const deepseekCompat: OpenAICompletionsCompat = {
+		requiresReasoningContentOnAssistantMessages: true,
+		thinkingFormat: "deepseek",
+		reasoningEffortMap: {
+			minimal: "high",
+			low: "high",
+			medium: "high",
+			high: "high",
+			xhigh: "max",
+		},
+	};
+	const deepseekV4Models: Model<"openai-completions">[] = [
+		{
+			id: "deepseek-v4-flash",
+			name: "DeepSeek V4 Flash",
+			api: "openai-completions",
+			baseUrl: "https://api.deepseek.com",
+			provider: "deepseek",
 			reasoning: true,
-			input: ["text", "image"],
+			input: ["text"],
 			cost: {
-				input: 2.5,
-				output: 15,
-				cacheRead: 0.25,
+				input: 0.14,
+				output: 0.28,
+				cacheRead: 0.028,
 				cacheWrite: 0,
 			},
-			contextWindow: 272000,
-			maxTokens: 128000,
-		});
+			contextWindow: 1000000,
+			maxTokens: 384000,
+			compat: deepseekCompat,
+		},
+		{
+			id: "deepseek-v4-pro",
+			name: "DeepSeek V4 Pro",
+			api: "openai-completions",
+			baseUrl: "https://api.deepseek.com",
+			provider: "deepseek",
+			reasoning: true,
+			input: ["text"],
+			cost: {
+				input: 1.74,
+				output: 3.48,
+				cacheRead: 0.145,
+				cacheWrite: 0,
+			},
+			contextWindow: 1000000,
+			maxTokens: 384000,
+			compat: deepseekCompat,
+		},
+	];
+	allModels.push(...deepseekV4Models);
+
+	for (const candidate of allModels) {
+		if (candidate.api === "openai-completions" && candidate.id.includes("deepseek-v4")) {
+			candidate.compat = {
+				...candidate.compat,
+				requiresReasoningContentOnAssistantMessages: true,
+			};
+		}
 	}
 
 	const minimaxDirectSupportedIds = new Set(["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]);
@@ -1171,7 +1232,7 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text", "image"],
 			cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
-			contextWindow: 400000,
+			contextWindow: CODEX_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
@@ -1222,35 +1283,6 @@ async function generateModels() {
 					contextWindow: 1_050_000,
 					costMultiplier: 2,
 					description: "Allows up to 1M context. Usage and pricing double past the standard tier.",
-				},
-			],
-			compaction: { includeThinking: false },
-			maxTokens: CODEX_MAX_TOKENS,
-		},
-		{
-			id: "gpt-5.5",
-			name: "GPT-5.5",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-			baseUrl: CODEX_BASE_URL,
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
-			contextWindow: CODEX_CONTEXT,
-			contextTiers: [
-				{
-					id: "standard",
-					name: "Standard",
-					contextWindow: CODEX_CONTEXT,
-					description: "Standard Codex pricing up to 272k context.",
-					default: true,
-				},
-				{
-					id: "extended",
-					name: "Extended 1M",
-					contextWindow: 1_050_000,
-					cost: { input: 5, output: 22.5, cacheRead: 0.5, cacheWrite: 0 },
-					description: "Allows up to 1M context with higher input/output pricing past the standard tier.",
 				},
 			],
 			compaction: { includeThinking: false },

@@ -177,6 +177,7 @@ export function getModels<TProvider extends KnownProvider>(
  *
  * Supported today:
  * - GPT-5.2 / GPT-5.3 / GPT-5.4 / GPT-5.5 model families
+ * - DeepSeek V4 Pro
  * - Opus 4.6+ models (xhigh maps to adaptive effort "max" on Anthropic-compatible providers)
  */
 export function supportsXhigh<TApi extends Api>(model: Model<TApi>): boolean {
@@ -184,7 +185,8 @@ export function supportsXhigh<TApi extends Api>(model: Model<TApi>): boolean {
 		model.id.includes("gpt-5.2") ||
 		model.id.includes("gpt-5.3") ||
 		model.id.includes("gpt-5.4") ||
-		model.id.includes("gpt-5.5")
+		model.id.includes("gpt-5.5") ||
+		model.id.includes("deepseek-v4-pro")
 	) {
 		return true;
 	}

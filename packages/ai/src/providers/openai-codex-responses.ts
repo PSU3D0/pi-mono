@@ -347,7 +347,7 @@ function buildRequestBody(
 		body.service_tier = options.serviceTier;
 	}
 
-	if (context.tools) {
+	if (context.tools && context.tools.length > 0) {
 		body.tools = convertResponsesTools(context.tools, { strict: null });
 	}
 
@@ -373,19 +373,26 @@ function clampReasoningEffort(modelId: string, effort: string): string {
 	return effort;
 }
 
-function getServiceTierCostMultiplier(serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined): number {
+function getServiceTierCostMultiplier(
+	model: Pick<Model<"openai-codex-responses">, "id">,
+	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
+): number {
 	switch (serviceTier) {
 		case "flex":
 			return 0.5;
 		case "priority":
-			return 2;
+			return model.id === "gpt-5.5" ? 2.5 : 2;
 		default:
 			return 1;
 	}
 }
 
-function applyServiceTierPricing(usage: Usage, serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined) {
-	const multiplier = getServiceTierCostMultiplier(serviceTier);
+function applyServiceTierPricing(
+	usage: Usage,
+	serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
+	model: Pick<Model<"openai-codex-responses">, "id">,
+) {
+	const multiplier = getServiceTierCostMultiplier(model, serviceTier);
 	if (multiplier === 1) return;
 
 	usage.cost.input *= multiplier;
@@ -434,7 +441,7 @@ async function processStream(
 	await processResponsesStream(mapCodexEvents(parseSSE(response)), output, stream, model, {
 		serviceTier: options?.serviceTier,
 		resolveServiceTier: resolveCodexServiceTier,
-		applyServiceTierPricing,
+		applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
 	});
 }
 
@@ -990,7 +997,7 @@ async function processWebSocketStream(
 		await processResponsesStream(wrappedStream, output, stream, model, {
 			serviceTier: options?.serviceTier,
 			resolveServiceTier: resolveCodexServiceTier,
-			applyServiceTierPricing,
+			applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
 		});
 
 		// Update incremental state for the next request on this connection
