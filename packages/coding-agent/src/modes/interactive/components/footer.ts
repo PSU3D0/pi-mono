@@ -1,5 +1,5 @@
-import { getContextTierPriceIndicator } from "@mariozechner/pi-ai";
-import { type Component, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { getContextTierPriceIndicator } from "@earendil-works/pi-ai";
+import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.js";
 import { theme } from "../theme/theme.js";
