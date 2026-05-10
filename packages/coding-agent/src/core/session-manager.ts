@@ -13,7 +13,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "fs";
-import { open, readdir, readFile, stat, type FileHandle } from "fs/promises";
+import { type FileHandle, open, readdir, readFile, stat } from "fs/promises";
 import { join, resolve } from "path";
 import { v7 as uuidv7 } from "uuid";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
@@ -546,19 +546,119 @@ function getSessionModifiedDate(entries: FileEntry[], header: SessionHeader, sta
 	return !Number.isNaN(headerTime) ? new Date(headerTime) : statsMtime;
 }
 
+const SESSION_INFO_HEAD_CHUNK_SIZE = 8192; // 8KB — enough for header + first message + a few entries
+const SESSION_INFO_TAIL_BLOCK_SIZE = 64 * 1024; // Large enough for typical assistant/tool-use records.
+const SESSION_INFO_TAIL_MAX_BYTES = 1024 * 1024; // Keep listing bounded even for pathological JSONL records.
+const SESSION_INFO_TAIL_MAX_ENTRIES = 200;
+
+function getActivityTimestampFromEntry(entry: FileEntry): number | undefined {
+	if (entry.type !== "message") return undefined;
+
+	const message = (entry as SessionMessageEntry).message;
+	if (!isMessageWithContent(message)) return undefined;
+	if (message.role !== "user" && message.role !== "assistant") return undefined;
+
+	const msgTimestamp = (message as { timestamp?: number }).timestamp;
+	if (typeof msgTimestamp === "number") {
+		return msgTimestamp;
+	}
+
+	const entryTimestamp = (entry as SessionEntryBase).timestamp;
+	if (typeof entryTimestamp !== "string") return undefined;
+
+	const t = new Date(entryTimestamp).getTime();
+	return Number.isNaN(t) ? undefined : t;
+}
+
+interface TailScanResult {
+	bytesRead: number;
+	parsedEntries: number;
+	/** True when the scan stopped before reaching the start of the file. */
+	hitLimit: boolean;
+}
+
 /**
- * Fast session info builder that reads only the first and last chunks of the file.
- * Avoids reading multi-MB session files entirely just to show a list entry.
+ * Scan complete JSONL records from EOF toward the start of the file.
+ *
+ * A fixed-size tail read is fragile for append-only JSONL: a single large final
+ * assistant message can be bigger than the tail chunk, leaving no complete line
+ * to parse. This bounded reverse scan keeps session listing fast while growing
+ * the tail window until it has complete records or reaches safety limits.
+ */
+async function scanJsonlTailEntries(
+	fh: FileHandle,
+	fileSize: number,
+	onEntryNewestFirst: (entry: FileEntry) => boolean,
+): Promise<TailScanResult> {
+	let position = fileSize;
+	let bytesRead = 0;
+	let parsedEntries = 0;
+	let tailBuffer = Buffer.alloc(0);
+	let processedLineCount = 0;
+
+	while (position > 0 && bytesRead < SESSION_INFO_TAIL_MAX_BYTES && parsedEntries < SESSION_INFO_TAIL_MAX_ENTRIES) {
+		const readSize = Math.min(SESSION_INFO_TAIL_BLOCK_SIZE, position, SESSION_INFO_TAIL_MAX_BYTES - bytesRead);
+		position -= readSize;
+		bytesRead += readSize;
+
+		const chunk = Buffer.alloc(readSize);
+		await fh.read(chunk, 0, readSize, position);
+		tailBuffer = Buffer.concat([chunk, tailBuffer]);
+
+		const tailText = tailBuffer.toString("utf8");
+		let completeText: string;
+		if (position === 0) {
+			completeText = tailText;
+		} else {
+			// The first line is partial until the scan reaches its preceding newline.
+			const firstNewline = tailText.indexOf("\n");
+			if (firstNewline < 0) {
+				continue;
+			}
+			completeText = tailText.slice(firstNewline + 1);
+		}
+
+		const lines = completeText.split("\n").filter((l) => l.trim());
+		const newLineCount = lines.length - processedLineCount;
+		if (newLineCount <= 0) continue;
+
+		// Previously processed newer lines are a suffix of the newly decoded line list.
+		// Process only the newly uncovered older lines, newest-to-oldest.
+		for (let i = newLineCount - 1; i >= 0 && parsedEntries < SESSION_INFO_TAIL_MAX_ENTRIES; i--) {
+			try {
+				const entry = JSON.parse(lines[i]) as FileEntry;
+				parsedEntries++;
+				if (onEntryNewestFirst(entry)) {
+					return { bytesRead, parsedEntries, hitLimit: false };
+				}
+			} catch {
+				// Skip malformed/truncated records.
+			}
+		}
+
+		processedLineCount = lines.length;
+	}
+
+	return {
+		bytesRead,
+		parsedEntries,
+		hitLimit:
+			position > 0 && (bytesRead >= SESSION_INFO_TAIL_MAX_BYTES || parsedEntries >= SESSION_INFO_TAIL_MAX_ENTRIES),
+	};
+}
+
+/**
+ * Fast session info builder that reads a small head chunk plus a bounded reverse
+ * tail scan. Avoids reading multi-MB session files entirely just to show a list
+ * entry, while still handling large final JSONL records robustly.
  *
  * Extracts: session header (first line), first user message (first chunk),
- * latest session_info/name (last chunk), and uses file stat for modified date.
+ * latest session_info/name (tail scan when nearby), and activity-based modified date.
  *
  * allMessagesText is left empty — populated lazily on first search query.
  * messageCount is approximated from file size.
  */
 async function buildSessionInfoFast(filePath: string): Promise<SessionInfo | null> {
-	const CHUNK_SIZE = 8192; // 8KB — enough for header + first message + a few entries
-
 	let fh: FileHandle | undefined;
 	try {
 		const stats = await stat(filePath);
@@ -566,7 +666,7 @@ async function buildSessionInfoFast(filePath: string): Promise<SessionInfo | nul
 		const fileSize = stats.size;
 
 		// Read the first chunk
-		const headBuf = Buffer.alloc(Math.min(CHUNK_SIZE, fileSize));
+		const headBuf = Buffer.alloc(Math.min(SESSION_INFO_HEAD_CHUNK_SIZE, fileSize));
 		await fh.read(headBuf, 0, headBuf.length, 0);
 		const headText = headBuf.toString("utf8");
 		const headLines = headText.split("\n").filter((l) => l.trim());
@@ -595,22 +695,13 @@ async function buildSessionInfoFast(filePath: string): Promise<SessionInfo | nul
 				if (entry.type === "message") {
 					headMessageCount++;
 					const message = (entry as SessionMessageEntry).message;
-					if (isMessageWithContent(message)) {
-						if (!firstMessage && message.role === "user") {
-							firstMessage = extractTextContent(message) || "";
-						}
-						if (message.role === "user" || message.role === "assistant") {
-							const msgTs = (message as { timestamp?: number }).timestamp;
-							if (typeof msgTs === "number") {
-								lastActivityTimestamp = Math.max(lastActivityTimestamp ?? 0, msgTs);
-							} else {
-								const entryTs = (entry as SessionEntryBase).timestamp;
-								if (typeof entryTs === "string") {
-									const t = new Date(entryTs).getTime();
-									if (!Number.isNaN(t)) lastActivityTimestamp = Math.max(lastActivityTimestamp ?? 0, t);
-								}
-							}
-						}
+					if (isMessageWithContent(message) && !firstMessage && message.role === "user") {
+						firstMessage = extractTextContent(message) || "";
+					}
+
+					const activityTimestamp = getActivityTimestampFromEntry(entry);
+					if (activityTimestamp !== undefined) {
+						lastActivityTimestamp = Math.max(lastActivityTimestamp ?? 0, activityTimestamp);
 					}
 				}
 			} catch {
@@ -618,44 +709,29 @@ async function buildSessionInfoFast(filePath: string): Promise<SessionInfo | nul
 			}
 		}
 
-		// Read the last chunk (if file is larger than one chunk)
-		if (fileSize > CHUNK_SIZE) {
-			const tailOffset = Math.max(0, fileSize - CHUNK_SIZE);
-			const tailBuf = Buffer.alloc(Math.min(CHUNK_SIZE, fileSize - tailOffset));
-			await fh.read(tailBuf, 0, tailBuf.length, tailOffset);
-			const tailText = tailBuf.toString("utf8");
-			// Skip first partial line (may be truncated)
-			const firstNewline = tailText.indexOf("\n");
-			const tailContent = firstNewline >= 0 ? tailText.slice(firstNewline + 1) : tailText;
-			const tailLines = tailContent.split("\n").filter((l) => l.trim());
-
-			for (const line of tailLines) {
-				try {
-					const entry = JSON.parse(line) as FileEntry;
-					// Use last session_info for name
-					if (entry.type === "session_info") {
-						name = (entry as SessionInfoEntry).name?.trim() || undefined;
-					}
-					// Track last activity timestamp for modified date
-					if (entry.type === "message") {
-						const message = (entry as SessionMessageEntry).message;
-						if (isMessageWithContent(message) && (message.role === "user" || message.role === "assistant")) {
-							const msgTs = (message as { timestamp?: number }).timestamp;
-							if (typeof msgTs === "number") {
-								lastActivityTimestamp = Math.max(lastActivityTimestamp ?? 0, msgTs);
-							} else {
-								const entryTs = (entry as SessionEntryBase).timestamp;
-								if (typeof entryTs === "string") {
-									const t = new Date(entryTs).getTime();
-									if (!Number.isNaN(t)) lastActivityTimestamp = Math.max(lastActivityTimestamp ?? 0, t);
-								}
-							}
-						}
-					}
-				} catch {
-					// skip malformed
+		// Reverse-scan the tail (if file is larger than the head chunk). This finds
+		// recent activity even when the newest JSONL record is larger than a fixed
+		// tail read.
+		let tailScanHitLimit = false;
+		if (fileSize > SESSION_INFO_HEAD_CHUNK_SIZE) {
+			let tailNameSeen = false;
+			const tailScan = await scanJsonlTailEntries(fh, fileSize, (entry) => {
+				// Scanning newest-to-oldest means the first session_info is the latest one
+				// in the scanned tail, including explicit clears.
+				if (!tailNameSeen && entry.type === "session_info") {
+					name = (entry as SessionInfoEntry).name?.trim() || undefined;
+					tailNameSeen = true;
 				}
-			}
+
+				const activityTimestamp = getActivityTimestampFromEntry(entry);
+				if (activityTimestamp !== undefined) {
+					lastActivityTimestamp = Math.max(lastActivityTimestamp ?? 0, activityTimestamp);
+					return true;
+				}
+
+				return false;
+			});
+			tailScanHitLimit = tailScan.hitLimit;
 		}
 
 		const cwd = typeof (header as SessionHeader).cwd === "string" ? (header as SessionHeader).cwd : "";
@@ -665,9 +741,16 @@ async function buildSessionInfoFast(filePath: string): Promise<SessionInfo | nul
 				? new Date((header as SessionHeader).timestamp).getTime()
 				: NaN;
 
-		// Modified date: prefer last activity from tail, then header timestamp, then file mtime
-		const modified = lastActivityTimestamp
-			? new Date(lastActivityTimestamp)
+		// Modified date: prefer latest user/assistant activity. If the bounded tail
+		// scan could not reach a complete recent record (for example, a single huge
+		// final JSONL line), bias toward file mtime rather than incorrectly sorting
+		// an active session by an ancient header/head timestamp.
+		let modifiedTimestamp = lastActivityTimestamp;
+		if (tailScanHitLimit && stats.mtime.getTime() > (modifiedTimestamp ?? 0)) {
+			modifiedTimestamp = stats.mtime.getTime();
+		}
+		const modified = modifiedTimestamp
+			? new Date(modifiedTimestamp)
 			: !Number.isNaN(headerTime)
 				? new Date(headerTime)
 				: stats.mtime;
