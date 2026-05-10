@@ -1,5 +1,4 @@
 // UI Components for extensions
-export { type AccountAction, AccountsPanelComponent } from "./accounts-panel.js";
 export { ArminComponent } from "./armin.js";
 export { AssistantMessageComponent } from "./assistant-message.js";
 export { BashExecutionComponent } from "./bash-execution.js";
